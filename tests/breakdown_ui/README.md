@@ -6,7 +6,7 @@ We have an image of a portfolio overview page. Your task is to break it down int
 
 You can do this in anyway you like. If you are a visual person, you could draw it out on paper or use a tool like Figma. If you prefer text, you could write it out in a markdown file or in notion. If you prefer code, you could make some files but no implementation logic is required.
 
-Please make sure to include the following:
+Consider the following areas when breaking down the components:
 
 - A clear hierarchy of components
 - Reusable components
