@@ -1,13 +1,14 @@
-/*
-Context: 
-This is a scheduled job that runs every day at midnight to clean up unsubmitted forms that are older than 7 days. 
-When a user visits a public form (not an internal form where the user has already made an account), a token is generated and stored in the database.
-This allows any answers given can be linked to the entity, and allows the users to directly apply to the product without creating an account.
-If the user does not submit the form, the token and the entity should be deleted after 7 days.
-This is to prevent the database from being cluttered with unused tokens and entities.
-*/
-
-// For the code test you can ignore that the imports are not working.
+/* Context: 
+ This is a scheduled job that runs every day at midnight to clean up unsubmitted forms that are older than 7 days. 
+ When a user visits a public form (not an internal form where the user has already made an account), a token is generated and stored in the database.
+-This allows any answers given can be linked to the entity, and allows the users to directly apply to the product without creating an account.
++This allows any form answers to be linked to the entity, and allows the users to directly apply to the product without creating an account.
+ If the user does not submit the form, the token and the entity should be deleted after 7 days.
+ This is to prevent the database from being cluttered with unused tokens and entities.
+ */
+ 
+-// For the code test you can ignore that the imports are not working.
++// For the purpose of this test you can ignore that the imports are not working.
 import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
