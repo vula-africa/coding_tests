@@ -5,8 +5,6 @@ We’re planning for the next 12 months of growth, expecting a **10x increase in
   - Flags **high-risk applications** where `fundAmount > 50000` or `borrowerName` is missing.
   - Returns a **summary object**:
     ```tsx
-    ts;
-    CopyEdit;
     {
       totalApplications: number;
       flaggedApplications: number;
@@ -15,4 +13,6 @@ We’re planning for the next 12 months of growth, expecting a **10x increase in
     ```
 - **Bonus:** In 1–2 lines, explain **how you’d optimise this for 1M records**.
 
-We’re looking for **clean reasoning, clear architecture thinking, and code that your team would respect**.
+We’re looking for clean reasoning, well commented, clear architecture thinking, and code that your team would respect.
+
+Please then record a quick (sub-5 minute) loom video that explains your approach and trade-offs.
