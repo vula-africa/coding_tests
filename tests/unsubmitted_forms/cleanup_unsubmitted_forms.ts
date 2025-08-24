@@ -7,12 +7,19 @@
  This is to prevent the database from being cluttered with unused tokens and entities.
  */
 
-/* Task:
- 1. Read the code below and understand what it does.
- 2. Identify the issues in the code.
- 3. Fix the issues and make a PR with the changes.
- 4. Explain the changes you made in the PR description *and* in a screen recording / loom video.
-*/
+/* Task Instructions:
+ * 1. Read and understand the code below
+ * 2. Identify ALL issues in the code (there are multiple)
+ * 3. Fix the issues and create a working solution
+ * 4. Create a PR with clear commit messages
+ * 5. Record a 3-5 minute Loom video explaining:
+ *    - What issues you found
+ *    - How you fixed them
+ *    - Any trade-offs you considered
+ *
+ * Focus on: correctness, performance, error handling, and code clarity
+ * Expected time: 45-60 minutes
+ */
 
 // For the purpose of this test you can ignore that the imports are not working.
 import type { JobScheduleQueue } from "@prisma/client";

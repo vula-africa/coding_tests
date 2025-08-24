@@ -6,11 +6,30 @@ We’ve attached a mock API log file.
 
 ## Your Challenge
 
-- Analyse the logs and identify the likely root cause of the slowdown.
-- Suggest one immediate fix you would implement.
-- Draft a 1–2 line SQL or pseudo‑code query to identify all affected funding requests.
-- Suggest one long‑term technical improvement to prevent this from recurring.
-- Note down the bullet points you would bring up at the next retro.
+**Analyze the logs below and provide:**
+
+1. **Root Cause Analysis**
+
+   - What's causing the slowdown?
+   - Supporting evidence from the logs
+
+2. **Immediate Action** (next 10 minutes)
+
+   - One quick fix you'd implement right now
+
+3. **Prevention**
+
+   - One long-term improvement to prevent recurrence
+
+4. **Retrospective Notes**
+
+   - 3-4 bullet points for next team retro
+
+**Expected time: 10-25 minutes**
+
+## Output
+
+Please record a loom video discussing the challenge outputs
 
 ### Mock Log File
 
@@ -22,5 +41,9 @@ We’ve attached a mock API log file.
   { "timestamp": "2025-08-01T18:06:20Z", "endpoint": "/risk-score", "responseTimeMs": 820, "status": "Timeout", "modelVersion": "v1.3" },
   { "timestamp": "2025-08-01T18:06:30Z", "endpoint": "/risk-score", "responseTimeMs": 90,  "status": "OK", "modelVersion": "v1.2" },
   { "timestamp": "2025-08-01T18:06:40Z", "endpoint": "/funding-approve", "responseTimeMs": 700, "status": "Timeout", "modelVersion": "v1.3" }
+  { "timestamp": "2025-08-01T18:07:00Z", "endpoint": "/risk-score", "responseTimeMs": 95, "status":
+   "OK", "modelVersion": "v1.2" },
+  { "timestamp": "2025-08-01T18:07:15Z", "endpoint": "/risk-score", "responseTimeMs": 890,
+  "status": "Timeout", "modelVersion": "v1.3" }
 ]
 ```
