@@ -28,53 +28,95 @@ import { update_job_status } from "./generic_scheduler";
 
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
-
+    
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // Get all expired tokens that are older than 7 days
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
+          lt: sevenDaysAgo,
         },
+        select: { token: true, entityId: true },
       },
     });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+    let processedCount = 0;
+    let errorCount = 0;
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
+    // Process tokens in batches
+    const batchSize = 50;
+    for (let i = 0; i < expiredTokens.length; i += batchSize) {
+      const batch = expiredTokens.slice(i, i + batchSize);
+      
+      for (const token of batch) {
+        try {
+          // Validate that entityId exists
+          if (!token.entityId) {
+            console.warn(`Token ${token.token} has no entityId, skipping`);
+            continue;
+          }
+
+          // Check if relationship exists and is in "new" status
+          const relationship = await prisma.relationship.findFirst({
             where: {
-              entity_id: token.entityId || "",
+              product_id: token.productId,
+              status: "new",
             },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+          });
+
+          if (relationship) {
+            await prisma.$transaction(async (tx) => {
+              
+              // Delete all corpus items associated with the entity first
+              await tx.new_corpus.deleteMany({
+                where: {
+                  entity_id: token.entityId,
+                },
+              });
+
+              // Delete the relationship
+              await tx.relationship.delete({
+                where: { id: relationship.id },
+              });
+
+              // Delete the token
+              await tx.publicFormsTokens.delete({
+                where: { token: token.token },
+              });
+
+              // Delete the entity last (after all dependent records are removed)
+              await tx.entity.delete({
+                where: { id: token.entityId },
+              });
+            });
+
+            processedCount++;
+          } else {
+            // just delete the token and entity if the relationship was already deleted
+            await prisma.$transaction(async (tx) => {
+              await tx.new_corpus.deleteMany({
+                where: {
+                  entity_id: token.entityId,
+                },
+              });
+              await tx.publicFormsTokens.delete({
+                where: { token: token.token },
+              });
+              await tx.entity.delete({
+                where: { id: token.entityId },
+              });
+            });
+
+            processedCount++;
+          }
+        } catch (tokenError) {
+          errorCount++;
+          console.error(`Error processing token ${token.token}:`, tokenError);
+        }
       }
     }
 
+    console.log(`Cleanup completed: ${processedCount} tokens processed, ${errorCount} errors`);
     await update_job_status(job.id, "completed");
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
