@@ -86,7 +86,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       },
     });
 
-    if (expiredTokens.length) {
+    if (expiredTokens && expiredTokens.length === 0) {
       console.info(`No expired tokens present. Exiting.`)
       await update_job_status(job.id, "completed");
       return;
