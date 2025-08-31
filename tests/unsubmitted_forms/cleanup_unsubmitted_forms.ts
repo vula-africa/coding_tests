@@ -89,6 +89,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     if (expiredTokens.length) {
       console.info(`No expired tokens present. Exiting.`)
       await update_job_status(job.id, "completed");
+      return;
     };
 
     console.info(`Expired tokens present. Current count at ${expiredTokens.length}.`)
@@ -96,7 +97,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     // PERFORMANCE FIX
     // Use in memory store instead of O(n) time complexity calls to the database
     const productIds = expiredTokens.map(token => token.productId);
-    const allNewrelationships = await prisma.relationship.findMany({
+    const newrelationships = await prisma.relationship.findMany({
       where: {
         product_id: { in: productIds },
         status: 'new',
@@ -106,7 +107,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     // Create relationships look up. O(1) complexity in time
     // TRADE OFF: More memory used and complexity of space
     let relationshipsLookup = {};
-    allNewrelationships.forEach(rel => {
+    newrelationships.forEach(rel => {
       relationshipsLookup[rel.product_id] = rel
     });
 
@@ -141,7 +142,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         totalSuccessful++
       }
       catch (error) {
-        console.error("An error occurred")
+        console.error(`Failed to process token ${token.token}:`, error);
         totalFailed++
       }
     }
