@@ -109,9 +109,11 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     for (const token of expiredTokens) {
-      const relationship = relationshipsLookup[token.productId]
-
-      if (relationship) {
+      try {
+        const relationship = relationshipsLookup[token.productId]
+        if (!relationship) {
+          continue;
+        }
         await prisma.$transaction([
           // Delete relationship
           prisma.relationship.delete({
@@ -132,6 +134,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             where: { id: token.entityId || "" },
           }),
         ]);
+      }
+      catch (error) {
+        console.log("An error occurred")
       }
     }
 
