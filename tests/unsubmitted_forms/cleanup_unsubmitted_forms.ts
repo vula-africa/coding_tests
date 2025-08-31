@@ -119,26 +119,32 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           continue;
         }
         // CONSIDER moving this transaction call to a separate testable function.
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
+        // Fix: Code rabbit AI recommendation: https://github.com/vula-africa/coding_tests/pull/3#pullrequestreview-3171774089
+        // Also consider order of execution
+        await prisma.$transaction(async (tx) => {
+          await tx.relationship.delete({
             where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
+          });
+
+          await tx.publicFormsTokens.delete({
             where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+          });
+
+          if (token.entityId) {
+            await tx.new_corpus.deleteMany({
+              where: {
+                entity_id: token.entityId,
+              },
+            });
+
+            await tx.entity.delete({
+              where: { id: token.entityId },
+              // optionally add `rejectOnNotFound: false` if you're unsure about existence
+            });
+          } else {
+            console.warn(`Token ${token.token} has no entityId — skipping entity cleanup.`);
+          }
+        });
 
         totalSuccessful++
       }
