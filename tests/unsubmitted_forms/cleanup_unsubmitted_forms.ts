@@ -118,6 +118,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         if (!relationship) {
           continue;
         }
+        // CONSIDER moving this transaction call to a separate testable function.
         await prisma.$transaction([
           // Delete relationship
           prisma.relationship.delete({
@@ -155,3 +156,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     throw error;
   }
 };
+
+/**
+ * Possible Optimizations
+ * 1. Process this in batches - could be a great enhancement for the job
+ * 2. Consider moving the $transaction call to a separate testable function.
+ */
