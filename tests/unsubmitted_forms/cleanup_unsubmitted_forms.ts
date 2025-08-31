@@ -72,6 +72,8 @@ import { update_job_status } from "./generic_scheduler";
 const DAYS_AGO = 7;
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
+    let totalSuccessful = 0;
+    let totalFailed = 0;
     console.log("Initializing cleanup submitted forms function")
     // Find forms that were created 7 days ago and have not been submitted
     // CRITICAL BUG FIX: Ensure we are considering millisecond calculation
@@ -85,11 +87,11 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     if (expiredTokens.length) {
-      console.log(`No expired tokens present. Exiting.`)
+      console.info(`No expired tokens present. Exiting.`)
       await update_job_status(job.id, "completed");
     };
 
-    console.log(`Expired tokens present. Current count at ${expiredTokens.length}.`)
+    console.info(`Expired tokens present. Current count at ${expiredTokens.length}.`)
 
     // PERFORMANCE FIX
     // Use in memory store instead of O(n) time complexity calls to the database
@@ -109,6 +111,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     for (const token of expiredTokens) {
+      // IMPROVEMENT: Add try catch block for each token
       try {
         const relationship = relationshipsLookup[token.productId]
         if (!relationship) {
@@ -134,12 +137,16 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             where: { id: token.entityId || "" },
           }),
         ]);
+
+        totalSuccessful++
       }
       catch (error) {
-        console.log("An error occurred")
+        console.error("An error occurred")
+        totalFailed++
       }
     }
 
+    console.info(`Job completed with successful operations ${totalSuccessful} and failed operations ${totalFailed}`)
     await update_job_status(job.id, "completed");
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
