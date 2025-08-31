@@ -69,12 +69,13 @@ import { update_job_status } from "./generic_scheduler";
  */
 
 // CONSIDER: Move this to a constants file
-const DAYS_AGO = 7; 
+const DAYS_AGO = 7;
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
+    console.log("Initializing cleanup submitted forms function")
+    // Find forms that were created 7 days ago and have not been submitted
     // CRITICAL BUG FIX: Ensure we are considering millisecond calculation
-    const cutOffDate = new Date(Date.now() - DAYS_AGO * 24 * 60 * 60 * 1000);   
+    const cutOffDate = new Date(Date.now() - DAYS_AGO * 24 * 60 * 60 * 1000);
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
@@ -83,13 +84,32 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       },
     });
 
+    if (expiredTokens.length) {
+      console.log(`No expired tokens present. Exiting.`)
+      await update_job_status(job.id, "completed");
+    };
+
+    console.log(`Expired tokens present. Current count at ${expiredTokens.length}.`)
+
+    // PERFORMANCE FIX
+    // Use in memory store instead of O(n) time complexity calls to the database
+    const productIds = expiredTokens.map(token => token.productId);
+    const allNewrelationships = await prisma.relationship.findMany({
+      where: {
+        product_id: { in: productIds },
+        status: 'new',
+      },
+    });
+
+    // Create relationships look up. O(1) complexity in time
+    // TRADE OFF: More memory used and complexity of space
+    let relationshipsLookup = {};
+    allNewrelationships.forEach(rel => {
+      relationshipsLookup[rel.product_id] = rel
+    });
+
     for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+      const relationship = relationshipsLookup[token.productId]
 
       if (relationship) {
         await prisma.$transaction([
