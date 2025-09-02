@@ -52,6 +52,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     const entityIds = expiredTokens
       .map((t) => t.entityId)
       .filter((id): id is string => id !== null && id !== undefined);
+      
     try {
       await prisma.$transaction(async (tx) => {
         // Delete relationships with status "new" for the affected products
@@ -90,11 +91,14 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       console.error("Transaction failed during cleanup:", txError);
     }
 
-
     await update_job_status(job.id, "completed");
   } catch (error) {
-    console.error("Error cleaning up unsubmitted forms:", error);
+    console.error("Critical error in cleanup job:", {
+      error,
+      jobId: job.id,
+      timestamp: new Date().toISOString(),
+    });
     await update_job_status(job.id, "failed");
-    throw error;
+    // Don't rethrow - prevent job queue crash
   }
 };
