@@ -26,38 +26,32 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
-
 // Constants for clarity
 const DAYS_TO_EXPIRE = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
-  const cutoffDate = new Date(Date.now() - DAYS_TO_EXPIRE * MS_PER_DAY);
-
   try {
+    const cutoffDate = new Date(Date.now() - DAYS_TO_EXPIRE * MS_PER_DAY);
+
     // Find expired tokens (older than 7 days, unsubmitted)
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: { lt: cutoffDate },
-        // Use whichever flag the schema supports for unsubmitted forms:
-        // submitted: false,
-        // OR: submittedAt: null,
-        submitted: false, // Assuming this field exists
+        submitted: false, // assuming there's a 'submitted' field to check if the form was submitted
       },
     });
-
     if (expiredTokens.length === 0) {
       console.log("No expired tokens found. Cleanup skipped.");
       await update_job_status(job.id, "completed");
       return;
     }
-
+    // Collect IDs for batch deletion
     const tokenIds = expiredTokens.map((t) => t.token);
     const productIds = expiredTokens.map((t) => t.productId);
     const entityIds = expiredTokens
       .map((t) => t.entityId)
       .filter((id): id is string => id !== null && id !== undefined);
-
     try {
       await prisma.$transaction(async (tx) => {
         // Delete relationships with status "new" for the affected products
@@ -96,14 +90,11 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       console.error("Transaction failed during cleanup:", txError);
     }
 
+
     await update_job_status(job.id, "completed");
   } catch (error) {
-    console.error("Critical error in cleanup job:", {
-      error,
-      jobId: job.id,
-      timestamp: new Date().toISOString(),
-    });
+    console.error("Error cleaning up unsubmitted forms:", error);
     await update_job_status(job.id, "failed");
-    // Don't rethrow - prevent job queue crash
+    throw error;
   }
 };
