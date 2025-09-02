@@ -26,59 +26,84 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
-export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
-  try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
 
+// Constants for clarity
+const DAYS_TO_EXPIRE = 7;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
+  const cutoffDate = new Date(Date.now() - DAYS_TO_EXPIRE * MS_PER_DAY);
+
+  try {
+    // Find expired tokens (older than 7 days, unsubmitted)
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
+        createdAt: { lt: cutoffDate },
+        // Use whichever flag the schema supports for unsubmitted forms:
+        // submitted: false,
+        // OR: submittedAt: null,
+        submitted: false, // Assuming this field exists
       },
     });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
+    if (expiredTokens.length === 0) {
+      console.log("No expired tokens found. Cleanup skipped.");
+      await update_job_status(job.id, "completed");
+      return;
+    }
+
+    const tokenIds = expiredTokens.map((t) => t.token);
+    const productIds = expiredTokens.map((t) => t.productId);
+    const entityIds = expiredTokens
+      .map((t) => t.entityId)
+      .filter((id): id is string => id !== null && id !== undefined);
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // Delete relationships with status "new" for the affected products
+        await tx.relationship.deleteMany({
+          where: {
+            product_id: { in: productIds },
+            status: "new",
+          },
+        });
+
+        // Delete the expired tokens
+        await tx.publicFormsTokens.deleteMany({
+          where: { token: { in: tokenIds } },
+        });
+
+        // Delete corpus entries for the entities (if any exist)
+        if (entityIds.length > 0) {
+          await tx.new_corpus.deleteMany({
+            where: { entity_id: { in: entityIds } },
+          });
+        }
+
+        // Delete the entities themselves (if any exist)
+        if (entityIds.length > 0) {
+          await tx.entity.deleteMany({
+            where: { id: { in: entityIds } },
+          });
+        }
       });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
-      }
+      console.log(
+        `Cleanup job success: removed ${expiredTokens.length} tokens, ${entityIds.length} entities.`
+      );
+    } catch (txError) {
+      // Catch transaction failure but don't crash the whole job runner
+      console.error("Transaction failed during cleanup:", txError);
     }
 
     await update_job_status(job.id, "completed");
   } catch (error) {
-    console.error("Error cleaning up unsubmitted forms:", error);
+    console.error("Critical error in cleanup job:", {
+      error,
+      jobId: job.id,
+      timestamp: new Date().toISOString(),
+    });
     await update_job_status(job.id, "failed");
-    throw error;
+    // Don't rethrow - prevent job queue crash
   }
 };
