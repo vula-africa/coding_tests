@@ -1,49 +1,35 @@
-# It’s Friday 6:30 PM:
+# API Latency Spike – RCA and Action Plan
 
-Within 20 mins, API latency has spiked 200%.
-3 lenders in Kenya are reporting timeouts when approving SME funding requests.
-We’ve attached a mock API log file.
+## Root Cause Analysis
+The slowdown is caused by the deployment of **model version v1.3**.
 
-## Your Challenge
+**Supporting evidence from logs:**
+- Calls using **v1.2** return fast (90–120 ms) and succeed.
+- Calls using **v1.3** show extreme latency (680–890 ms) and repeated timeouts across `/risk-score` and `/funding-approve`.
+- The spike started at **18:06**, exactly when v1.3 requests appear.
 
-**Analyze the logs below and provide:**
+Conclusion: The new model version introduced heavy processing or resource contention.
 
-1. **Root Cause Analysis**
+---
 
-   - What's causing the slowdown?
-   - Supporting evidence from the logs
+## Immediate Action (next 10 minutes)
+**Quick fix:** Roll back traffic from **v1.3 → v1.2** immediately (via feature flag, routing rule, or deployment rollback).
 
-2. **Immediate Action** (next 10 minutes)
+This will restore stability for lenders in Kenya and stop timeout errors.
 
-   - One quick fix you'd implement right now
+---
 
-3. **Prevention**
+## Prevention
+**Long-term improvement:**
+- Adopt a **canary release process**: send only a small % of traffic to new model versions first.
+- Add **automated alerts on p95/p99 latency** per model version.
+- Ensure monitoring dashboards track latency/errors **per version**.
 
-   - One long-term improvement to prevent recurrence
+---
 
-4. **Retrospective Notes**
-
-   - 3-4 bullet points for next team retro
-
-**Expected time: 10-25 minutes**
-
-## Output
-
-Please record a loom video discussing the challenge outputs
-
-### Mock Log File
-
-```
-[
-  { "timestamp": "2025-08-01T18:05:00Z", "endpoint": "/risk-score", "responseTimeMs": 120, "status": "OK", "modelVersion": "v1.2" },
-  { "timestamp": "2025-08-01T18:06:00Z", "endpoint": "/risk-score", "responseTimeMs": 750, "status": "Timeout", "modelVersion": "v1.3" },
-  { "timestamp": "2025-08-01T18:06:10Z", "endpoint": "/funding-approve", "responseTimeMs": 680, "status": "OK", "modelVersion": "v1.3" },
-  { "timestamp": "2025-08-01T18:06:20Z", "endpoint": "/risk-score", "responseTimeMs": 820, "status": "Timeout", "modelVersion": "v1.3" },
-  { "timestamp": "2025-08-01T18:06:30Z", "endpoint": "/risk-score", "responseTimeMs": 90,  "status": "OK", "modelVersion": "v1.2" },
-  { "timestamp": "2025-08-01T18:06:40Z", "endpoint": "/funding-approve", "responseTimeMs": 700, "status": "Timeout", "modelVersion": "v1.3" }
-  { "timestamp": "2025-08-01T18:07:00Z", "endpoint": "/risk-score", "responseTimeMs": 95, "status":
-   "OK", "modelVersion": "v1.2" },
-  { "timestamp": "2025-08-01T18:07:15Z", "endpoint": "/risk-score", "responseTimeMs": 890,
-  "status": "Timeout", "modelVersion": "v1.3" }
-]
-```
+## Retrospective Notes
+Topics for next retro:
+- Why v1.3 was deployed without detecting latency regressions.
+- Gaps in monitoring (latency only noticed after lender complaints).
+- Need for model version–specific dashboards/alerts.
+- Agreement to enforce **canary + rollback** as standard release practice.
