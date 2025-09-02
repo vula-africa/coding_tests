@@ -52,7 +52,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     const entityIds = expiredTokens
       .map((t) => t.entityId)
       .filter((id): id is string => id !== null && id !== undefined);
-      
+
     try {
       await prisma.$transaction(async (tx) => {
         // Delete relationships with status "new" for the affected products
