@@ -9,7 +9,7 @@ This caused SME funding delays, risking lender trust.
 - Calls using **v1.3** show extreme latency (680–890 ms) and repeated timeouts across `/risk-score` and `/funding-approve`.
 - The spike started at **18:06**, exactly when v1.3 requests appear.
 
-👉 **Conclusion:** The new model version introduced heavy processing or resource contention.
+**Conclusion:** The new model version introduced heavy processing or resource contention.
 
 ---
 
