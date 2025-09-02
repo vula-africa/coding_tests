@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    /* Basic Options */
+    "target": "es2020", // A modern, stable version of JavaScript
+    "module": "NodeNext", // The best module system for modern Node.js
+    "moduleResolution": "NodeNext", // How to find modules
+    "outDir": "./dist", // Where to put compiled files (good practice)
+
+    /* Strictness and Interoperability */
+    "strict": true, // Enables all strict type-checking options
+    "esModuleInterop": true, // Helps with importing older libraries
+    "forceConsistentCasingInFileNames": true, // Prevents case-related bugs
+    "skipLibCheck": true // Speeds up compilation by not checking library files
+  },
+  "include": ["**/*.ts"], // Tells TypeScript to look at all .ts files
+  "exclude": ["node_modules"] // Tells TypeScript to ignore the node_modules folder
+}
+
