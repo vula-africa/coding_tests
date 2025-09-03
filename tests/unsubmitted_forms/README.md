@@ -1,8 +1,12 @@
+# Unsubmitted Forms Challenge 
+
+## Loom Video: https://www.loom.com/share/56869e22b00c412f9de54c957c28af87?sid=9ea7f8af-503b-4743-ad4c-6a631b931763
+
 ## Cleanup Unsubmitted Forms Job - Issues and Solutions
 
 ### Problems Found
-- **Incorrect Date Calculation**: Used seconds instead of milliseconds (`7 * 24 * 60 * 60`), deleting tokens from ~10 minutes ago instead of 7 days. The 24-hour window (`gte` and `lt`) limited cleanup to one day.
-- **Inefficient Queries (N+1)**: Looped through tokens with `findFirst` for relationships, making one DB call per token, slow for large datasets (e.g., 500 tokens).
+- **Incorrect Date Calculation**: Used seconds instead of milliseconds (`7 * 24 * 60 * 60`). The 24-hour window (`gte` and `lt`) limited cleanup to one day.
+- **Inefficient Queries (N+1)**: Looped through tokens with `findFirst` for relationships, making one DB call per token, slow for large datasets.
 - **Unsafe Entity ID Handling**: Used `token.entityId || ""`, risking runtime errors in Prisma deletions for null/undefined IDs.
 - **No Unsubmitted Form Check**: Did not explicitly verify forms were unsubmitted, risking deletion of submitted forms.
 - **Single Relationship Deletion**: Only deleted the first relationship per token, leaving others behind if multiple existed.
