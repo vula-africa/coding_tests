@@ -1,5 +1,7 @@
 # API Latency Spike – RCA and Action Plan
 
+## Loom Video: https://www.loom.com/share/145166dd961d44c3a0edf1e4de91577f?sid=1b45fe78-e4cb-4f3b-a359-496a52a9a46a
+
 ## Root Cause Analysis
 The slowdown is caused by the deployment of **model version v1.3**, likely due to unoptimized model inference or increased computational complexity.  
 This caused SME funding delays, risking lender trust.
