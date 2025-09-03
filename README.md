@@ -1,23 +1,30 @@
-# Hello & Welcome! 👋
+## Overview
 
-## You Made It This Far! 🎉
+I have completed the following challenges:
 
-First of all, congratulations on getting to this point in the exercises!
+- **unsubmitted_forms**
+  - Loom Video: https://www.loom.com/share/56869e22b00c412f9de54c957c28af87?sid=7e668ce9-796f-49a6-b218-f5a593ea1013
+- **end_of_week_issue**
+  - Loom Video: https://www.loom.com/share/145166dd961d44c3a0edf1e4de91577f?sid=dd939a42-d7b3-4404-9c8f-d359f293b615
+- **breakdown_ui**
+  - Loom Video: https://www.loom.com/share/218735722a7741a39a49618b378a2567?sid=cae45212-8e87-49df-906e-1c6d03ed2ba1
 
-## Don't Panic! 😌
+The solutions for the unsubmitted_forms challenge can be found in its respective folder.  
+Alongside the code, I’ve also recorded a Loom video explanation for each challenge, walking through my thought process, the issues I found, and how I approached fixing them.
 
-These exercises aren't designed to be stressful or tricky. They're simply here to foster good conversations and explore ideas together.
+---
 
-## Unclear Instructions? Let Us Know! 💬
+## Completed Tests
 
-If anything seems unclear or confusing, please don't hesitate to tell us! We're not perfect at writing coding tests, and we genuinely want your feedback. Your input helps us improve the quality of these exercises through future PRs.
+- For **senior roles** → `architecture_challenge`, `unsubmitted_forms`, and `end_of_week_issue`.  
+- For **mid-level roles** → `batch_processing`, `breakdown_ui`, and `end_of_week_issue`.  
 
-We're learning and growing just like you are, and we appreciate your help in making this process better for everyone. Every day brings new opportunities to grow and improve so don't be shy about sharing your thoughts!
+In my case, the completed set is:  
+✅ **unsubmitted_forms**  
+✅ **end_of_week_issue**  
+✅ **breakdown_ui**
 
-# Which tests to complete?
+---
 
-In the email inviting you to complete the tests, you should have been told which tests to complete.
-
-For senior roles, we ask you to complete the `architecture_challenge`, `unsubmitted_forms` and `end_of_week_issue` tests.
-
-For mid-level roles, we ask you to complete the `batch_processing`, `breakdown_ui` and `end_of_week_issue` tests.
+Thanks for reviewing!  
+I look forward to your feedback.
