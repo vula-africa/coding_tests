@@ -1,5 +1,7 @@
 # Breakdown UI Challenge
 
+## Loom Video: https://www.loom.com/share/218735722a7741a39a49618b378a2567?sid=0fb0a543-166a-480b-aadb-5beefe47dd78
+
 ## Component Breakdown – Portfolio Overview
 
 ### Page Layout 
