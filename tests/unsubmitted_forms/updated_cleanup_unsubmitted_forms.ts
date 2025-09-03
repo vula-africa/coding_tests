@@ -100,7 +100,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       }
     }
 
-    // Enhanced logging for observability
+    // Enhanced logging for observability for successful, failed, and skipped instances
     console.log(
       `Cleanup summary: ${successfulCleanups} successful, ${failedTokens.length} failed, ${skippedTokens.length} skipped (no unsubmitted relationship).`
     );
