@@ -1,84 +1,68 @@
-/* Context: 
- This is a scheduled job that runs every day at midnight to clean up forms that users started filling in but didn't submit which are older than 7 days. 
- When a user visits a public form, a token is generated and stored in the database.
- This token is used to identify the user and link the answers to the entity.
- An entity is the owner of data in the database, separated as it could be a business or an individual but has been decoupled from a login/user.
- If the user does not submit the form, the token and the entity should be deleted after 7 days.
- This is to prevent the database from being cluttered with unused tokens and entities.
- */
-
-/* Task Instructions:
- * 1. Read and understand the code below
- * 2. Identify ALL issues in the code (there are multiple)
- * 3. Fix the issues and create a working solution
- * 4. Create a PR with clear commit messages
- * 5. Record a 3-5 minute Loom video explaining:
- *    - What issues you found
- *    - How you fixed them
- *    - Any trade-offs you considered
- *
- * Focus on: correctness, performance, error handling, and code clarity
- * Expected time: 45-60 minutes
- */
-
-// For the purpose of this test you can ignore that the imports are not working.
 import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
-import { update_job_status } from "./generic_scheduler";
+import { update_job_status as updateJobStatus } from "./generic_scheduler"; 
 
-export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
+type RelationshipStatus = "new" | "submitted";
+type JobStatus = "completed" | "failed";
+
+const BATCH_SIZE = 20
+const EXPIRATION_DAYS = 7
+
+/**
+ * Cleans up expired unsubmitted public form tokens and all associated data.
+ *
+ * This scheduled job runs in batches and performs deletions:
+ *   1. Deletes all corpus items linked to the entities
+ *   2. Deletes all relationships linked to the batch of tokens
+ *   3. Deletes all expired tokens in the batch
+ *   4. Deletes all associated entities
+ *
+ * The function uses absolute date calculation (midnight 7 days ago) to avoid missing tokens
+ * if the job is delayed or re-queued. Batches reduce database load by minimizing repeated
+ * opening and closing of connections, while still ensuring correctness.
+ *
+ * @param {JobScheduleQueue} job - The scheduled job object containing job metadata.
+ * @throws Will throw an error if any database operation fails, updating the job status to 'failed'.
+ */
+export const cleanupUnsubmittedForms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    // Calculate absolute EXPIRATION_DAYS day-old date (midnight EXPIRATION_DAYS days ago)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const sevenDaysAgo = new Date(today.getTime() - EXPIRATION_DAYS * 24 * 60 * 60 * 1000);
 
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
-      },
-    });
+    while (true) {
+      const expiredTokens = await prisma.publicFormsTokens.findMany({
+        where: { createdAt: { lt: sevenDaysAgo } },
+        take: BATCH_SIZE,
+      });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
+      if (expiredTokens.length === 0) break; // exit when no more expired tokens
+
+      const entityIds = expiredTokens
+        .map((t) => t.entityId)
+        .filter(Boolean) as string[];
+      const tokenValues = expiredTokens.map((t) => t.token);
+
+      const relationships = await prisma.relationship.findMany({
         where: {
-          product_id: token.productId,
-          status: "new",
+          product_id: { in: expiredTokens.map((t) => t.productId) },
+          status: "new" as RelationshipStatus,
         },
       });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
-      }
+      await prisma.$transaction([
+        prisma.new_corpus.deleteMany({ where: { entity_id: { in: entityIds } } }),
+        prisma.relationship.deleteMany({ where: { id: { in: relationships.map((r) => r.id) } } }),
+        prisma.publicFormsTokens.deleteMany({ where: { token: { in: tokenValues } } }),
+        prisma.entity.deleteMany({ where: { id: { in: entityIds } } }),
+      ]);
     }
 
-    await update_job_status(job.id, "completed");
+    await updateJobStatus(job.id, "completed" as JobStatus);
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
-    await update_job_status(job.id, "failed");
+    await updateJobStatus(job.id, "failed" as JobStatus);
     throw error;
   }
 };
