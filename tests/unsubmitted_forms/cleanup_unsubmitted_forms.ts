@@ -1,11 +1,19 @@
 import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
-import { update_job_status as updateJobStatus } from "./generic_scheduler"; 
+import { update_job_status } from "./generic_scheduler"; 
 
 type RelationshipStatus = "new" | "submitted";
 type JobStatus = "completed" | "failed";
 
-const BATCH_SIZE = 20
+// Number of records to process in one batch.
+// This value can be fine-tuned depending on:
+// - database size
+// - indexes available
+// - workload characteristics
+// Larger batches = fewer transactions but more memory/lock contention.
+// Smaller batches = safer but potentially slower overall.
+// Reasoning behind it is in my pr description.
+const BATCH_SIZE = 20 
 const EXPIRATION_DAYS = 7
 
 /**
@@ -24,7 +32,7 @@ const EXPIRATION_DAYS = 7
  * @param {JobScheduleQueue} job - The scheduled job object containing job metadata.
  * @throws Will throw an error if any database operation fails, updating the job status to 'failed'.
  */
-export const cleanupUnsubmittedForms = async (job: JobScheduleQueue) => {
+export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     // Calculate absolute EXPIRATION_DAYS day-old date (midnight EXPIRATION_DAYS days ago)
     const today = new Date();
@@ -67,10 +75,12 @@ export const cleanupUnsubmittedForms = async (job: JobScheduleQueue) => {
       ]);
     }
 
-    await updateJobStatus(job.id, "completed" as JobStatus);
+    await update_job_status(job.id, "completed" as JobStatus);
   } catch (error) {
+    // TODO: This is not a good way to loggging. 
+    // We should use loggers like winston. Check my pr description for more.
     console.error("Error cleaning up unsubmitted forms:", error);
-    await updateJobStatus(job.id, "failed" as JobStatus);
+    await update_job_status(job.id, "failed" as JobStatus);
     throw error;
   }
 };
