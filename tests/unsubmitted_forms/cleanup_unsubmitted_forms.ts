@@ -43,38 +43,47 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     for (const token of expiredTokens) {
-      await prisma.$transaction(async (tx) => {
+
+      try {
+        await prisma.$transaction(async (tx) => {
           
-        const relationships = await tx.relationship.findMany({
-          where: {
-            product_id: token.productId,
-            status: "new",
-          },
+          const relationships = await tx.relationship.findMany({
+            where: {
+              product_id: token.productId,
+              status: "new",
+            },
+          });
+
+          if (relationships.length > 0) {
+            
+            await tx.relationship.deleteMany({
+              where: { id: { in: relationships.map((r) => r.id) } },
+            });
+          }
+
+      
+          await tx.publicFormsTokens.delete({
+            where: { token: token.token },
+          });
+
+          if (token.entityId) {
+            
+            await tx.new_corpus.deleteMany({
+              where: { entity_id: token.entityId },
+            });
+
+            await tx.entity.delete({
+              where: { id: token.entityId },
+            });
+          }
         });
-
-        if (relationships.length > 0) {
-          
-          await tx.relationship.deleteMany({
-            where: { id: { in: relationships.map((r) => r.id) } },
-          });
-        }
-
-    
-        await tx.publicFormsTokens.delete({
-          where: { token: token.token },
-        });
-
-        if (token.entityId) {
-          
-          await tx.new_corpus.deleteMany({
-            where: { entity_id: token.entityId },
-          });
-
-          await tx.entity.delete({
-            where: { id: token.entityId },
-          });
-        }
-      });
+      } catch (innerError) {
+        console.error(
+          `Failed cleanup for token ${token.token} (entity ${token.entityId}):`,
+          innerError
+        );
+       
+      }
     }
 
     await update_job_status(job.id, "completed");
