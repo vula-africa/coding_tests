@@ -1,84 +1,122 @@
-/* Context: 
- This is a scheduled job that runs every day at midnight to clean up forms that users started filling in but didn't submit which are older than 7 days. 
- When a user visits a public form, a token is generated and stored in the database.
- This token is used to identify the user and link the answers to the entity.
- An entity is the owner of data in the database, separated as it could be a business or an individual but has been decoupled from a login/user.
- If the user does not submit the form, the token and the entity should be deleted after 7 days.
- This is to prevent the database from being cluttered with unused tokens and entities.
- */
-
-/* Task Instructions:
- * 1. Read and understand the code below
- * 2. Identify ALL issues in the code (there are multiple)
- * 3. Fix the issues and create a working solution
- * 4. Create a PR with clear commit messages
- * 5. Record a 3-5 minute Loom video explaining:
- *    - What issues you found
- *    - How you fixed them
- *    - Any trade-offs you considered
- *
- * Focus on: correctness, performance, error handling, and code clarity
- * Expected time: 45-60 minutes
- */
-
-// For the purpose of this test you can ignore that the imports are not working.
 import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
+import { metrics } from "../monitoring/metrics"; // Hypothetical metrics client (e.g., Prometheus)
 
+// Configuration for flexibility and team maintainability
+const BATCH_SIZE = parseInt(process.env.CLEANUP_BATCH_SIZE || "100");
+const CLEANUP_DAYS = parseInt(process.env.CLEANUP_DAYS || "7");
+
+/**
+ * Cleans up unsubmitted form tokens and associated entities older than CLEANUP_DAYS.
+ * Runs daily at midnight to prevent database clutter, optimize storage costs, and ensure compliance.
+ * Uses batch processing for scalability, transactions for integrity, and metrics for observability.
+ * Note: Ensure indexes on publicFormsTokens.createdAt and status for query performance.
+ * @param job - The scheduled job details
+ */
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    // Calculate cutoff date for tokens older than CLEANUP_DAYS
+    const cutoffDate = new Date(Date.now() - CLEANUP_DAYS * 24 * 60 * 60 * 1000);
+    let cursor: string | undefined = undefined;
+    let hasMore = true;
+    let totalDeleted = 0; // Track for metrics and monitoring
+    const errors: string[] = []; // Track errors for reporting
 
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
-      },
-    });
-
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
+    while (hasMore) {
+      // Recommendation: Add indexes on createdAt and status for performance
+      const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
-          product_id: token.productId,
-          status: "new",
+          createdAt: {
+            lte: cutoffDate, // Tokens older than or equal to 7 days
+          },
+          status: "unsubmitted", // Ensure only unsubmitted forms are targeted (schema confirmation needed)
         },
+        include: {
+          relationship: {
+            where: { status: "new" },
+          },
+        },
+        take: BATCH_SIZE,
+        skip: cursor ? 1 : 0,
+        cursor: cursor ? { token: cursor } : undefined,
       });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+      if (expiredTokens.length === 0) {
+        hasMore = false;
+        break;
       }
+
+      for (const token of expiredTokens) {
+        if (!token.entityId) {
+          console.warn(`Skipping token ${token.token}: Missing entityId`);
+          errors.push(`Token ${token.token}: Missing entityId`);
+          continue;
+        }
+
+        if (!token.relationship) {
+          console.log(`Skipping token ${token.token}: No associated relationship`);
+          continue;
+        }
+
+        try {
+          await prisma.$transaction([
+            // Delete relationship
+            prisma.relationship.delete({
+              where: { id: token.relationship.id },
+            }),
+            // Delete the token
+            prisma.publicFormsTokens.delete({
+              where: { token: token.token },
+            }),
+            // Delete all corpus items associated with the entity
+            prisma.new_corpus.deleteMany({
+              where: {
+                entity_id: token.entityId,
+              },
+            }),
+            // Delete the entity (company)
+            prisma.entity.delete({
+              where: { id: token.entityId },
+            }),
+          ]);
+
+          totalDeleted++;
+          console.log(
+            `Deleted token ${token.token}, relationship ${token.relationship.id}, entity ${token.entityId}`
+          );
+        } catch (txError) {
+          console.error(`Failed to delete token ${token.token}:`, txError);
+          errors.push(`Token ${token.token}: ${txError instanceof Error ? txError.message : "Unknown error"}`);
+        }
+      }
+
+      cursor = expiredTokens[expiredTokens.length - 1].token;
+      hasMore = expiredTokens.length === BATCH_SIZE;
     }
 
+    // Record metrics for observability (e.g., Prometheus)
+    metrics.increment("cleanup_unsubmitted_forms_deleted", totalDeleted);
+    if (errors.length > 0) {
+      metrics.increment("cleanup_unsubmitted_forms_errors", errors.length);
+      console.warn(`Encountered ${errors.length} errors during cleanup:`, errors);
+    }
+
+    console.log(`Cleanup job ${job.id} completed. Deleted ${totalDeleted} form(s).`);
     await update_job_status(job.id, "completed");
   } catch (error) {
-    console.error("Error cleaning up unsubmitted forms:", error);
+    console.error(`Cleanup job ${job.id} failed:`, error);
     await update_job_status(job.id, "failed");
-    throw error;
+    metrics.increment("cleanup_unsubmitted_forms_failed", 1);
+    if (error instanceof Error) {
+      console.error(`Error details: ${error.message}`);
+    }
   }
 };
+
+/**
+ * Extension points for team collaboration:
+ * - Add alerting if errors.length exceeds a threshold 
+ * - Delegate index creation 
+ * - Extend to support partial cleanups by form type by adding a type filter.
+ */
