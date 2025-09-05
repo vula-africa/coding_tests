@@ -34,6 +34,11 @@ export const cleanupUnsubmittedForms = async (job: JobScheduleQueue) => {
     while (true) {
       const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: { createdAt: { lt: sevenDaysAgo } },
+        select: {
+          entityId: true,
+          token: true,
+          productId: true,
+        },
         take: BATCH_SIZE,
       });
 
@@ -48,6 +53,9 @@ export const cleanupUnsubmittedForms = async (job: JobScheduleQueue) => {
         where: {
           product_id: { in: expiredTokens.map((t) => t.productId) },
           status: "new" as RelationshipStatus,
+        },
+        select: {
+          id: true,
         },
       });
 
