@@ -7,6 +7,13 @@ import { metrics } from "../monitoring/metrics"; // Hypothetical metrics client 
 const BATCH_SIZE = parseInt(process.env.CLEANUP_BATCH_SIZE || "100");
 const CLEANUP_DAYS = parseInt(process.env.CLEANUP_DAYS || "7");
 
+/**
+ * Cleans up unsubmitted form tokens and associated entities older than CLEANUP_DAYS.
+ * Runs daily at midnight to prevent database clutter, optimize storage costs, and ensure compliance.
+ * Uses batch processing for scalability, transactions for integrity, and metrics for observability.
+ * Note: Ensure indexes on publicFormsTokens.createdAt and status for query performance.
+ * @param job - The scheduled job details
+ */
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     // Calculate cutoff date for tokens older than CLEANUP_DAYS
@@ -17,6 +24,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     const errors: string[] = []; // Track errors for reporting
 
     while (hasMore) {
+      // Recommendation: Add indexes on createdAt and status for performance
       const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
           createdAt: {
@@ -105,3 +113,10 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     }
   }
 };
+
+/**
+ * Extension points for team collaboration:
+ * - Add alerting if errors.length exceeds a threshold 
+ * - Delegate index creation 
+ * - Extend to support partial cleanups by form type by adding a type filter.
+ */
