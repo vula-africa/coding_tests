@@ -5,7 +5,8 @@ Overview
 
 Key Fixes
 - Correct 7-day threshold calculation (milliseconds).
-- Filter all tokens created before the 7-day threshold, not a 1-day window.
+- UTC midnight cutoff to prevent delayed-run drift.
+- Composite-cursor pagination by `createdAt, token` to avoid ordering edge cases.
 - Replace N+1 per-token deletes with paginated batch processing.
 - Safe entity deletion only when no other unexpired tokens reference the entity.
 - FK-safe deletion order: dependent data -> tokens -> entities.
@@ -25,8 +26,8 @@ Operational Notes
 - Failures in one batch do not stop the entire job; failed chunks are logged.
 
 How it works (high level)
-1. Compute sevenDaysAgo using milliseconds.
-2. Page through tokens with `createdAt < sevenDaysAgo`.
+1. Compute a UTC midnight cutoff for 7 days ago.
+2. Page through tokens with `createdAt < cutoff`, ordered by `createdAt, token`.
 3. For each batch:
    - Identify entities still referenced by unexpired tokens and keep them.
    - Delete dependent `new_corpus` for entities safe to delete.
