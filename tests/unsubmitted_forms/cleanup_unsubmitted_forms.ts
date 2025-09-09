@@ -36,25 +36,42 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
 
   try {
     await update_job_status(job.id, "in_progress");
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // Use UTC midnight cutoff 7 days ago to avoid drift when the job runs late
+    const cutoff = new Date();
+    cutoff.setUTCHours(0, 0, 0, 0);
+    cutoff.setUTCDate(cutoff.getUTCDate() - 7);
 
-    console.log(`[Cleanup Job ${job.id}] Starting. Deleting tokens created before ${sevenDaysAgo.toISOString()}`);
+    console.log(`[Cleanup Job ${job.id}] Starting. Deleting tokens created before (UTC cutoff) ${cutoff.toISOString()}`);
 
+    let lastCreatedAt: Date | undefined = undefined;
     let lastToken: string | undefined = undefined;
     let hasMore = true;
 
     while (hasMore) {
       const expiredTokensPage = await prisma.publicFormsTokens.findMany({
         where: {
-          createdAt: { lt: sevenDaysAgo },
-          ...(lastToken ? { token: { gt: lastToken } } : {}),
+          // Only records strictly older than the UTC cutoff
+          createdAt: { lt: cutoff },
+          // Composite-cursor style pagination: (createdAt, token)
+          ...(lastCreatedAt
+            ? {
+                OR: [
+                  { createdAt: { gt: lastCreatedAt } },
+                  { AND: [{ createdAt: lastCreatedAt }, { token: { gt: lastToken as string } }] },
+                ],
+              }
+            : {}),
         },
         select: {
           token: true,
           entityId: true,
           productId: true,
+          createdAt: true,
         },
-        orderBy: { token: "asc" },
+        orderBy: [
+          { createdAt: "asc" },
+          { token: "asc" },
+        ],
         take: BATCH_SIZE,
       });
 
@@ -76,7 +93,8 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             where: {
               entityId: { in: entityIdsInBatch },
               token: { notIn: tokenIdsInBatch },
-              createdAt: { gte: sevenDaysAgo },
+              // If any other token exists for this entity that is NOT expired by cutoff, keep the entity
+              createdAt: { gte: cutoff },
             },
             select: { entityId: true },
             distinct: ["entityId"],
@@ -128,6 +146,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         // Continue to next batch
       }
 
+      lastCreatedAt = expiredTokensPage[expiredTokensPage.length - 1].createdAt;
       lastToken = expiredTokensPage[expiredTokensPage.length - 1].token;
     }
 
