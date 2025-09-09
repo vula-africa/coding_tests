@@ -24,6 +24,13 @@ Operational Notes
 - BATCH_SIZE is set to 500 to balance throughput and transaction size.
 - The job logs progress per batch and totals upon completion.
 - Failures in one batch do not stop the entire job; failed chunks are logged.
+- Cursor is advanced only after a successful batch commit; on failure we retry the same page up to a small budget.
+- Consider a `completed_with_errors` terminal status when failed chunks > 0.
+
+Indexing Requirements
+- `publicFormsTokens(createdAt, token)` for page scans.
+- `publicFormsTokens(entityId, createdAt)` for entity-safety lookups.
+- `relationship(product_id, status)` if optional cleanup is enabled (and `entity_id` if scoping by entity).
 - Cursor advances only on successful commits; failed batches are retried (up to a small budget).
 - Recommended indexes:
   - `publicFormsTokens(createdAt, token)`

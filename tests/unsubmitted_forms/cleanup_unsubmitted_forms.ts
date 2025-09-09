@@ -84,11 +84,11 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       const entityIdsInBatch = [
         ...new Set(expiredTokensPage.map((t) => t.entityId).filter(Boolean) as string[]),
       ];
-
-      // retry the same page on transient failures without advancing the cursor
-      let attempts = 0;
+      // Process this page with retry budget; advance cursor only on success
+      let processedThisPage = false;
+      let retriesForPage = 0;
       const MAX_RETRIES = 3;
-      while (true) {
+      while (!processedThisPage) {
         try {
         // Determine which entities are safe to delete (no other unexpired tokens reference them)
         let entityIdsSafeToDelete: string[] = [];
@@ -97,7 +97,8 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             where: {
               entityId: { in: entityIdsInBatch },
               token: { notIn: tokenIdsInBatch },
-              // Keep entity if ANY other token exists (expired or not) to avoid FK issues/orphans
+              // If any other token exists for this entity (expired or not) and is not in this batch,
+              // keep the entity to avoid FK violations with out-of-batch tokens.
             },
             select: { entityId: true },
             distinct: ["entityId"],
@@ -105,7 +106,6 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           const toKeep = new Set(entitiesWithOtherTokens.map((e) => e.entityId!).filter(Boolean));
           entityIdsSafeToDelete = entityIdsInBatch.filter((id) => !toKeep.has(id));
         }
-
         const ops: Prisma.PrismaPromise<unknown>[] = [];
         // Delete dependent data first
         if (entityIdsSafeToDelete.length > 0) {
@@ -131,36 +131,38 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
               where: {
                 product_id: { in: productIdsInBatch },
                 status: "new",
-                // Scope by entity where schema supports it to avoid over-deleting
-                entity_id: { in: entityIdsSafeToDelete },
+                // Restrict by entity when supported to avoid over-deleting unrelated rows
+                ...(entityIdsSafeToDelete.length > 0 ? { entity_id: { in: entityIdsSafeToDelete } } : {}),
               },
             })
           );
         }
+
         await prisma.$transaction(ops);
         totalDeletedTokens += tokenIdsInBatch.length;
         console.log(
           `[Cleanup Job ${job.id}] Deleted ${tokenIdsInBatch.length} tokens. Deleted entities: ${entityIdsSafeToDelete.length}.`
         );
-        // advance cursor only after a successful commit
-        const last = expiredTokensPage[expiredTokensPage.length - 1];
-        lastCreatedAt = last.createdAt;
-        lastToken = last.token;
-        break; // exit retry loop on success
-      } catch (batchError) {
-        attempts += 1;
-        totalFailedChunks += 1;
-        console.error(
-          `[Cleanup Job ${job.id}] Failed batch (attempt ${attempts}/${MAX_RETRIES}) for tokens: ${tokenIdsInBatch.join(", ")}`,
-          batchError
-        );
-        if (attempts < MAX_RETRIES) {
-          // retry same page without advancing cursor
-          continue;
+          // advance cursor only on success
+          const last = expiredTokensPage[expiredTokensPage.length - 1];
+          lastCreatedAt = last.createdAt;
+          lastToken = last.token;
+          processedThisPage = true;
+        } catch (batchError) {
+          totalFailedChunks += 1;
+          retriesForPage += 1;
+          console.error(
+            `[Cleanup Job ${job.id}] Failed batch delete for tokens: ${tokenIdsInBatch.join(", ")}. Attempt ${retriesForPage}/${MAX_RETRIES}.`,
+            batchError
+          );
+          if (retriesForPage < MAX_RETRIES) {
+            continue; // retry same page; cursor unchanged
+          }
+          // Exhausted retries; bail out to avoid infinite loop
+          console.error(`[Cleanup Job ${job.id}] Exhausted retries for current page. Stopping early.`);
+          hasMore = false;
+          break;
         }
-        // Exhausted retries; bail out to avoid infinite loop on deterministic errors
-        throw batchError;
-      }
       }
     }
 
