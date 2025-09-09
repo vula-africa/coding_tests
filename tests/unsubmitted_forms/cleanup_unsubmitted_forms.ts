@@ -22,7 +22,7 @@
  */
 
 // For the purpose of this test you can ignore that the imports are not working.
-import type { JobScheduleQueue } from "@prisma/client";
+import type { JobScheduleQueue, Prisma } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
@@ -85,7 +85,11 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         ...new Set(expiredTokensPage.map((t) => t.entityId).filter(Boolean) as string[]),
       ];
 
-      try {
+      // retry the same page on transient failures without advancing the cursor
+      let attempts = 0;
+      const MAX_RETRIES = 3;
+      while (true) {
+        try {
         // Determine which entities are safe to delete (no other unexpired tokens reference them)
         let entityIdsSafeToDelete: string[] = [];
         if (entityIdsInBatch.length > 0) {
@@ -93,8 +97,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             where: {
               entityId: { in: entityIdsInBatch },
               token: { notIn: tokenIdsInBatch },
-              // If any other token exists for this entity that is NOT expired by cutoff, keep the entity
-              createdAt: { gte: cutoff },
+              // Keep entity if ANY other token exists (expired or not) to avoid FK issues/orphans
             },
             select: { entityId: true },
             distinct: ["entityId"],
@@ -103,7 +106,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           entityIdsSafeToDelete = entityIdsInBatch.filter((id) => !toKeep.has(id));
         }
 
-        const ops = [] as Parameters<typeof prisma.$transaction>[0];
+        const ops: Prisma.PrismaPromise<unknown>[] = [];
         // Delete dependent data first
         if (entityIdsSafeToDelete.length > 0) {
           ops.push(
@@ -128,26 +131,37 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
               where: {
                 product_id: { in: productIdsInBatch },
                 status: "new",
-                // If relationships are entity-scoped, uncomment the next line
-                // entity_id: { in: entityIdsSafeToDelete }
+                // Scope by entity where schema supports it to avoid over-deleting
+                entity_id: { in: entityIdsSafeToDelete },
               },
             })
           );
         }
-
         await prisma.$transaction(ops);
         totalDeletedTokens += tokenIdsInBatch.length;
         console.log(
           `[Cleanup Job ${job.id}] Deleted ${tokenIdsInBatch.length} tokens. Deleted entities: ${entityIdsSafeToDelete.length}.`
         );
+        // advance cursor only after a successful commit
+        const last = expiredTokensPage[expiredTokensPage.length - 1];
+        lastCreatedAt = last.createdAt;
+        lastToken = last.token;
+        break; // exit retry loop on success
       } catch (batchError) {
+        attempts += 1;
         totalFailedChunks += 1;
-        console.error(`[Cleanup Job ${job.id}] Failed batch delete for tokens: ${tokenIdsInBatch.join(", ")}`, batchError);
-        // Continue to next batch
+        console.error(
+          `[Cleanup Job ${job.id}] Failed batch (attempt ${attempts}/${MAX_RETRIES}) for tokens: ${tokenIdsInBatch.join(", ")}`,
+          batchError
+        );
+        if (attempts < MAX_RETRIES) {
+          // retry same page without advancing cursor
+          continue;
+        }
+        // Exhausted retries; bail out to avoid infinite loop on deterministic errors
+        throw batchError;
       }
-
-      lastCreatedAt = expiredTokensPage[expiredTokensPage.length - 1].createdAt;
-      lastToken = expiredTokensPage[expiredTokensPage.length - 1].token;
+      }
     }
 
     await update_job_status(job.id, "completed");

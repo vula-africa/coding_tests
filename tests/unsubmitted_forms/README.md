@@ -24,6 +24,11 @@ Operational Notes
 - BATCH_SIZE is set to 500 to balance throughput and transaction size.
 - The job logs progress per batch and totals upon completion.
 - Failures in one batch do not stop the entire job; failed chunks are logged.
+- Cursor advances only on successful commits; failed batches are retried (up to a small budget).
+- Recommended indexes:
+  - `publicFormsTokens(createdAt, token)`
+  - `publicFormsTokens(entityId, createdAt)`
+  - `relationship(product_id, status)` if optional cleanup is enabled
 
 How it works (high level)
 1. Compute a UTC midnight cutoff for 7 days ago.
