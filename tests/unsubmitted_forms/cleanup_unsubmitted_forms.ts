@@ -107,35 +107,39 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           entityIdsSafeToDelete = entityIdsInBatch.filter((id) => !toKeep.has(id));
         }
         const ops: Prisma.PrismaPromise<unknown>[] = [];
-        // Delete dependent data first
+        // Delete dependent data first (children before parents to avoid FK violations)
         if (entityIdsSafeToDelete.length > 0) {
           ops.push(
             prisma.new_corpus.deleteMany({ where: { entity_id: { in: entityIdsSafeToDelete } } })
           );
         }
-        // Delete tokens in batch
-        ops.push(
-          prisma.publicFormsTokens.deleteMany({ where: { token: { in: tokenIdsInBatch } } })
-        );
-        // Delete entities that are safe to delete
-        if (entityIdsSafeToDelete.length > 0) {
-          ops.push(prisma.entity.deleteMany({ where: { id: { in: entityIdsSafeToDelete } } }));
-        }
+        
         // Optional: clean up relationships with status "new" tied to these entities or products
         const productIdsInBatch = [
           ...new Set(expiredTokensPage.map((t) => t.productId).filter(Boolean) as string[]),
         ];
-        if (productIdsInBatch.length > 0) {
+        // Only run relationship cleanup when we are deleting entities to avoid over-deleting unrelated rows
+        if (productIdsInBatch.length > 0 && entityIdsSafeToDelete.length > 0) {
           ops.push(
             prisma.relationship.deleteMany({
               where: {
                 product_id: { in: productIdsInBatch },
                 status: "new",
-                // Restrict by entity when supported to avoid over-deleting unrelated rows
-                ...(entityIdsSafeToDelete.length > 0 ? { entity_id: { in: entityIdsSafeToDelete } } : {}),
+                // Restrict by entity to avoid unrelated deletes
+                entity_id: { in: entityIdsSafeToDelete },
               },
             })
           );
+        }
+        
+        // Delete tokens in batch
+        ops.push(
+          prisma.publicFormsTokens.deleteMany({ where: { token: { in: tokenIdsInBatch } } })
+        );
+        
+        // Delete entities that are safe to delete (after all children including relationships and tokens)
+        if (entityIdsSafeToDelete.length > 0) {
+          ops.push(prisma.entity.deleteMany({ where: { id: { in: entityIdsSafeToDelete } } }));
         }
 
         await prisma.$transaction(ops);
@@ -156,12 +160,14 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             batchError
           );
           if (retriesForPage < MAX_RETRIES) {
+            // brief backoff before retrying the same page
+            await new Promise((r) => setTimeout(r, Math.min(1000, 100 * retriesForPage)));
             continue; // retry same page; cursor unchanged
           }
-          // Exhausted retries; bail out to avoid infinite loop
-          console.error(`[Cleanup Job ${job.id}] Exhausted retries for current page. Stopping early.`);
-          hasMore = false;
-          break;
+          // Exhausted retries; signal failure so the job status is set to "failed"
+          throw new Error(
+            `[Cleanup Job ${job.id}] Exhausted retries for current page (tokens: ${tokenIdsInBatch.join(", ")}).`
+          );
         }
       }
     }
