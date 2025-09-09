@@ -64,15 +64,48 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       }
 
       const tokenIdsInBatch = expiredTokensPage.map((t) => t.token);
+      const entityIdsInBatch = [
+        ...new Set(expiredTokensPage.map((t) => t.entityId).filter(Boolean) as string[]),
+      ];
 
       try {
-        await prisma.$transaction([
-          prisma.publicFormsTokens.deleteMany({
-            where: { token: { in: tokenIdsInBatch } },
-          }),
-        ]);
+        // Determine which entities are safe to delete (no other unexpired tokens reference them)
+        let entityIdsSafeToDelete: string[] = [];
+        if (entityIdsInBatch.length > 0) {
+          const entitiesWithOtherTokens = await prisma.publicFormsTokens.findMany({
+            where: {
+              entityId: { in: entityIdsInBatch },
+              token: { notIn: tokenIdsInBatch },
+              createdAt: { gte: sevenDaysAgo },
+            },
+            select: { entityId: true },
+            distinct: ["entityId"],
+          });
+          const toKeep = new Set(entitiesWithOtherTokens.map((e) => e.entityId!).filter(Boolean));
+          entityIdsSafeToDelete = entityIdsInBatch.filter((id) => !toKeep.has(id));
+        }
+
+        const ops = [] as Parameters<typeof prisma.$transaction>[0];
+        // Delete dependent data first
+        if (entityIdsSafeToDelete.length > 0) {
+          ops.push(
+            prisma.new_corpus.deleteMany({ where: { entity_id: { in: entityIdsSafeToDelete } } })
+          );
+        }
+        // Delete tokens in batch
+        ops.push(
+          prisma.publicFormsTokens.deleteMany({ where: { token: { in: tokenIdsInBatch } } })
+        );
+        // Delete entities that are safe to delete
+        if (entityIdsSafeToDelete.length > 0) {
+          ops.push(prisma.entity.deleteMany({ where: { id: { in: entityIdsSafeToDelete } } }));
+        }
+
+        await prisma.$transaction(ops);
         totalDeletedTokens += tokenIdsInBatch.length;
-        console.log(`[Cleanup Job ${job.id}] Deleted ${tokenIdsInBatch.length} tokens in this batch.`);
+        console.log(
+          `[Cleanup Job ${job.id}] Deleted ${tokenIdsInBatch.length} tokens. Deleted entities: ${entityIdsSafeToDelete.length}.`
+        );
       } catch (batchError) {
         totalFailedChunks += 1;
         console.error(`[Cleanup Job ${job.id}] Failed batch delete for tokens: ${tokenIdsInBatch.join(", ")}`, batchError);
