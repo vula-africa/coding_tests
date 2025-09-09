@@ -100,6 +100,22 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         if (entityIdsSafeToDelete.length > 0) {
           ops.push(prisma.entity.deleteMany({ where: { id: { in: entityIdsSafeToDelete } } }));
         }
+        // Optional: clean up relationships with status "new" tied to these entities or products
+        const productIdsInBatch = [
+          ...new Set(expiredTokensPage.map((t) => t.productId).filter(Boolean) as string[]),
+        ];
+        if (productIdsInBatch.length > 0) {
+          ops.push(
+            prisma.relationship.deleteMany({
+              where: {
+                product_id: { in: productIdsInBatch },
+                status: "new",
+                // If relationships are entity-scoped, uncomment the next line
+                // entity_id: { in: entityIdsSafeToDelete }
+              },
+            })
+          );
+        }
 
         await prisma.$transaction(ops);
         totalDeletedTokens += tokenIdsInBatch.length;
