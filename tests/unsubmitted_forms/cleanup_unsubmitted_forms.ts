@@ -26,53 +26,78 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+
+// I am setting the number of miliseconds in a day
+const no_of_ms = 24 * 60 * 60 * 1000;
+
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    // I am setting a cut off date for the tokens that are older than 7 days
+    const cutoff_date = new Date(Date.now() - 7 * no_of_ms);
 
+    // here i am checking where the tokens are older than 7 days and not submitted
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
+        createdAt: { lt: cutoff_date },
+        submittedAt: null,
       },
     });
 
     for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
-
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+      // here i am checking if the token is orphaned without an entity
+      if (!token.entityId) {
+        await prisma.publicFormsTokens.delete({ where: { token: token.token } });
+        continue;
       }
+
+      const entityId = token.entityId;
+
+      // i am determining if the entity is safe to delete and has no submitted tokens and no non-"new" relationships
+      const [submittedTokenCount, nonNewRelCount] = await Promise.all([
+        prisma.publicFormsTokens.count({
+          where: {
+            entityId,
+            submittedAt: { not: null },
+          },
+        }),
+        prisma.relationship.count({
+          where: {
+            entity_id: entityId,
+            NOT: { status: "new" }, // anything other than 'new' blocks deletion
+          },
+        }),
+      ]);
+
+      const safeToDeleteEntity = submittedTokenCount === 0 && nonNewRelCount === 0;
+
+      // i have decided to trasnsactionally delete the things in the correct order
+      await prisma.$transaction(async (tx) => {
+        // // Delete the token
+        await tx.publicFormsTokens.delete({
+          where: { token: token.token },
+        });
+
+        if (safeToDeleteEntity) {
+          // remove new relationships tied to this entity
+          await tx.relationship.deleteMany({
+            where: {
+              entity_id: entityId,
+              status: "new",
+            },
+          });
+
+          // Delete all corpus items associated with the entity
+          await tx.new_corpus.deleteMany({
+            where: { entity_id: entityId },
+          });
+
+          // Delete the entity (company)
+          await tx.entity.delete({
+            where: { id: entityId },
+          });
+        }
+      });
     }
 
     await update_job_status(job.id, "completed");

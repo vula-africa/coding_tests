@@ -25,6 +25,11 @@ We’ve attached a mock API log file.
 
    - 3-4 bullet points for next team retro
 
+   My Four Bulleted Retrospective
+   - An issue was resported following a deployment that happened for v1.3 and seems testing was improper
+   - A need to work on a deployment strategy that is behind an automated rolback configurations in the event of a issues
+   - A need to discuss and work on monitory, alerts and notifications to pick up on issues before clients do 
+
 **Expected time: 10-25 minutes**
 
 ## Output
