@@ -26,58 +26,111 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+// Helper function to mask tokens for logging
+const maskToken = (token: string): string => {
+  if (!token || typeof token !== 'string' || token.length <= 10) return '[REDACTED]';
+  return `${token.slice(0, 6)}…${token.slice(-4)}`;
+};
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    console.log("🚀 Starting cleanup of unsubmitted forms...");
+    
+    // FIX: Correct date filtering - find ALL tokens older than 7 days
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    console.log(`📅 Looking for tokens older than: ${sevenDaysAgo}`);
 
+    // FIX: Select only needed fields to reduce payload
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
+          lt: sevenDaysAgo,
         },
       },
+      select: { token: true, entityId: true, productId: true }, // CODE RABBIT FIX: Reduce payload
     });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+    console.log(`🔍 Found ${expiredTokens.length} expired tokens`);
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+    // CODE RABBIT FIX: Isolate per-token failures so one bad record doesn't abort entire job
+    for (const token of expiredTokens) {
+      // Create a masked version for logging (security fix)
+      const tokenPreview = maskToken(token.token);
+      
+      try {
+        // CODE RABBIT FIX: Guard against missing entityId
+        if (!token.entityId) {
+          console.log(`⚠️ Token ${tokenPreview} has no entityId; deleting token only`);
+          await prisma.publicFormsTokens.delete({ where: { token: token.token } });
+          continue;
+        }
+
+        // FIX: Expanded status checking + CODE RABBIT FIX: Add entity_id constraint
+        const relationship = await prisma.relationship.findFirst({
+          where: {
+            product_id: token.productId,
+            entity_id: token.entityId, // CODE RABBIT FIX: Prevent cross-entity deletions
+            status: { in: ["new", "draft", "in_progress"] },
+          },
+        });
+
+        if (relationship) {
+          console.log(`🗑️ Found relationship to delete: ${relationship.id}`);
+          
+          // CODE RABBIT FIX: Use interactive transaction for safety
+          await prisma.$transaction(async (tx) => {
+            const INCOMPLETE = ["new", "draft", "in_progress"] as const;
+
+            // 1) Delete corpus tied to the entity
+            await tx.new_corpus.deleteMany({
+              where: { entity_id: token.entityId }, // CODE RABBIT FIX: Remove empty-string fallback
+            });
+
+            // 2) Delete ALL incomplete relationships for this entity
+            await tx.relationship.deleteMany({
+              where: {
+                entity_id: token.entityId,
+                productId: token.productId,
+                status: { in: INCOMPLETE },
+              },
+            });
+
+            // 3) Delete ALL tokens for this entity to avoid FK issues
+            await tx.publicFormsTokens.deleteMany({
+              where: { 
+                entityId: token.entityId,
+                productId: token.productId, 
+              },
+            });
+            // 4) Delete entity only if no relationships remain
+            const remaining = await tx.relationship.count({
+              where: { entity_id: token.entityId },
+            });
+            if (remaining === 0) {
+              await tx.entity.delete({
+                where: { id: token.entityId },
+              });
+            }
+          });
+
+          console.log(`✅ Cleaned up unsubmitted form for entity: ${token.entityId}`);
+        } else {
+          // CODE RABBIT FIX: Always delete stale token even if no relationship exists
+          await prisma.publicFormsTokens.delete({ where: { token: token.token } });
+          console.log(`➖ No incomplete relationship found; deleted stale token: ${tokenPreview}`);
+        }
+      } catch (error) {
+        // CODE RABBIT FIX: Isolate per-token failures + security fix for logging
+        console.error(`⚠️ Failed to clean token ${tokenPreview}`, error);
+        // Continue with next token instead of aborting entire job
       }
     }
 
+    console.log(`🎉 Cleanup job completed. Processed ${expiredTokens.length} tokens.`);
     await update_job_status(job.id, "completed");
+    
   } catch (error) {
-    console.error("Error cleaning up unsubmitted forms:", error);
+    console.error(`❌ Cleanup job failed for job ID: ${job.id}`, error);
     await update_job_status(job.id, "failed");
     throw error;
   }
