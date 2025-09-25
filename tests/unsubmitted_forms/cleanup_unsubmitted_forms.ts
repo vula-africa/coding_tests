@@ -26,6 +26,12 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+// Helper function to mask tokens for logging
+const maskToken = (token: string): string => {
+  if (!token || typeof token !== 'string' || token.length <= 10) return '[REDACTED]';
+  return `${token.slice(0, 6)}…${token.slice(-4)}`;
+};
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     console.log("🚀 Starting cleanup of unsubmitted forms...");
@@ -48,10 +54,13 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
 
     // CODE RABBIT FIX: Isolate per-token failures so one bad record doesn't abort entire job
     for (const token of expiredTokens) {
+      // Create a masked version for logging (security fix)
+      const tokenPreview = maskToken(token.token);
+      
       try {
         // CODE RABBIT FIX: Guard against missing entityId
         if (!token.entityId) {
-          console.log(`⚠️ Token ${token.token} has no entityId, deleting token only`);
+          console.log(`⚠️ Token ${tokenPreview} has no entityId; deleting token only`);
           await prisma.publicFormsTokens.delete({ where: { token: token.token } });
           continue;
         }
@@ -105,11 +114,11 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         } else {
           // CODE RABBIT FIX: Always delete stale token even if no relationship exists
           await prisma.publicFormsTokens.delete({ where: { token: token.token } });
-          console.log(`➖ No incomplete relationship found; deleted stale token: ${token.token}`);
+          console.log(`➖ No incomplete relationship found; deleted stale token: ${tokenPreview}`);
         }
       } catch (error) {
-        // CODE RABBIT FIX: Isolate per-token failures
-        console.error(`⚠️ Failed to clean token ${token.token}`, error);
+        // CODE RABBIT FIX: Isolate per-token failures + security fix for logging
+        console.error(`⚠️ Failed to clean token ${tokenPreview}`, error);
         // Continue with next token instead of aborting entire job
       }
     }
