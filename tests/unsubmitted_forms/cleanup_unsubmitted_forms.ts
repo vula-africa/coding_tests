@@ -90,15 +90,18 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             await tx.relationship.deleteMany({
               where: {
                 entity_id: token.entityId,
+                productId: token.productId,
                 status: { in: INCOMPLETE },
               },
             });
 
             // 3) Delete ALL tokens for this entity to avoid FK issues
             await tx.publicFormsTokens.deleteMany({
-              where: { entityId: token.entityId },
+              where: { 
+                entityId: token.entityId,
+                productId: token.productId, 
+              },
             });
-
             // 4) Delete entity only if no relationships remain
             const remaining = await tx.relationship.count({
               where: { entity_id: token.entityId },
