@@ -56,6 +56,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           entityId: true,
           productId: true
         },
+        orderBy: {
+          createdAt: 'asc', // Process oldest first
+        },
         take: CLEANUP_BATCH_SIZE,
       });
 
@@ -72,7 +75,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
 
       const relationships = await prisma.relationship.findMany({
         where: {
-          product_id: productIds,
+          product_id: {
+            in : productIds
+          },
           status: "new"
         },
         select: {
@@ -127,6 +132,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
 
       batch++;
     }
+
+    const endTime = new Date();
+    console.info( `[cleanup] Job ${job.id} completed successfully at ${endTime.toISOString()} (duration it take for the cleanup to finish: ${ (endTime.getTime() - startTime.getTime()) / 1000 }s)` );
     await update_job_status(job.id, "completed");
   } catch (error) {
     console.error(`[cleanup] Job ${job.id} failed at ${new Date().toISOString()}: `, error);
