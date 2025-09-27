@@ -25,13 +25,16 @@
 import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
+
 const CLEANUP_BATCH_SIZE = 50;
+const MILLISECONDS_IN_DAY = 24 * 60 * 60 * 1000;
+const TOKEN_EXPIRATION_DAYS = 7
 
 
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = new Date(Date.now() - TOKEN_EXPIRATION_DAYS * MILLISECONDS_IN_DAY);
 
     let hasMoreRecords = true;
 
