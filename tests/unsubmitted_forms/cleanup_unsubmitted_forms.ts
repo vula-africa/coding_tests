@@ -36,7 +36,16 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           lt: sevenDaysAgo, // days older than a week ago
         },
       },
+      select: {
+        token: true,
+        entityId: true,
+        productId: true
+      }
     });
+
+    const entityIds = expiredTokens.map(expiredToken => expiredToken.entityId).filter(entityId => entityId != null);
+    const productIds = expiredTokens.map(expiredToken => expiredToken.productId).filter(productId => productId != null);
+    const tokens = expiredTokens.map(expiredToken => expiredToken.token).filter(token => token != null);
 
     for (const token of expiredTokens) {
       const relationship = await prisma.relationship.findFirst({
@@ -44,6 +53,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           product_id: token.productId,
           status: "new",
         },
+        select: {
+          id: true
+        }
       });
 
       if (relationship) {
