@@ -1,5 +1,5 @@
-/* Context: 
- This is a scheduled job that runs every day at midnight to clean up forms that users started filling in but didn't submit which are older than 7 days. 
+/* Context:
+ This is a scheduled job that runs every day at midnight to clean up forms that users started filling in but didn't submit which are older than 7 days.
  When a user visits a public form, a token is generated and stored in the database.
  This token is used to identify the user and link the answers to the entity.
  An entity is the owner of data in the database, separated as it could be a business or an individual but has been decoupled from a login/user.
@@ -47,40 +47,53 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     const productIds = expiredTokens.map(expiredToken => expiredToken.productId).filter(productId => productId != null);
     const tokens = expiredTokens.map(expiredToken => expiredToken.token).filter(token => token != null);
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-        select: {
-          id: true
-        }
-      });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+    const relationships = await prisma.relationship.findMany({
+      where: {
+        product_id: productIds,
+        status: "new"
+      },
+      select: {
+        id: true,
       }
-    }
+    })
+    const relationshipIds = relationships.map(relationship => relationship.id)
+
+    await prisma.$transaction([
+      // Delete relationships
+      prisma.relationship.deleteMany({
+        where: {
+          id: {
+            in: relationshipIds,
+          }
+        },
+      }),
+      // Delete tokens
+      prisma.publicFormsTokens.deleteMany({
+        where: {
+          id: {
+            in: tokens
+          }
+        }
+      }),
+      // Delete all corpus items associated with the entity
+      prisma.new_corpus.deleteMany({
+        where: {
+          id: {
+            in: entityIds
+          }
+        }
+      }),
+
+      // Delete the entity (company)
+      prisma.entity.deleteMany({
+        where: {
+          id: {
+            in: entityIds
+          }
+        }
+      })
+    ])
 
     await update_job_status(job.id, "completed");
   } catch (error) {
