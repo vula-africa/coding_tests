@@ -25,76 +25,88 @@
 import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
+const CLEANUP_BATCH_SIZE = 50;
+
 
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: {
-          lt: sevenDaysAgo, // days older than a week ago
+
+    let hasMoreRecords = true;
+
+    while (hasMoreRecords){
+      const expiredTokens = await prisma.publicFormsTokens.findMany({
+        where: {
+          createdAt: {
+            lt: sevenDaysAgo, // days older than a week ago
+          },
         },
-      },
-      select: {
-        token: true,
-        entityId: true,
-        productId: true
-      }
-    });
-
-    const entityIds = expiredTokens.map(expiredToken => expiredToken.entityId).filter(entityId => entityId != null);
-    const productIds = expiredTokens.map(expiredToken => expiredToken.productId).filter(productId => productId != null);
-    const tokens = expiredTokens.map(expiredToken => expiredToken.token).filter(token => token != null);
-
-
-    const relationships = await prisma.relationship.findMany({
-      where: {
-        product_id: productIds,
-        status: "new"
-      },
-      select: {
-        id: true,
-      }
-    })
-    const relationshipIds = relationships.map(relationship => relationship.id)
-
-    await prisma.$transaction([
-      // Delete relationships
-      prisma.relationship.deleteMany({
-        where: {
-          id: {
-            in: relationshipIds,
-          }
+        select: {
+          token: true,
+          entityId: true,
+          productId: true
         },
-      }),
-      // Delete tokens
-      prisma.publicFormsTokens.deleteMany({
-        where: {
-          id: {
-            in: tokens
-          }
-        }
-      }),
-      // Delete all corpus items associated with the entity
-      prisma.new_corpus.deleteMany({
-        where: {
-          id: {
-            in: entityIds
-          }
-        }
-      }),
+        take: CLEANUP_BATCH_SIZE,
+      });
 
-      // Delete the entity (company)
-      prisma.entity.deleteMany({
+      if (expiredTokens.length === 0){
+        hasMoreRecords = false;
+        break;
+      }
+
+      const entityIds = expiredTokens.map(expiredToken => expiredToken.entityId).filter(entityId => entityId != null);
+      const productIds = expiredTokens.map(expiredToken => expiredToken.productId).filter(productId => productId != null);
+      const tokens = expiredTokens.map(expiredToken => expiredToken.token).filter(token => token != null);
+
+
+      const relationships = await prisma.relationship.findMany({
         where: {
-          id: {
-            in: entityIds
-          }
+          product_id: productIds,
+          status: "new"
+        },
+        select: {
+          id: true,
         }
       })
-    ])
+      const relationshipIds = relationships.map(relationship => relationship.id)
 
+      await prisma.$transaction([
+        // Delete relationships
+        prisma.relationship.deleteMany({
+          where: {
+            id: {
+              in: relationshipIds,
+            }
+          },
+        }),
+        // Delete tokens
+        prisma.publicFormsTokens.deleteMany({
+          where: {
+            id: {
+              in: tokens
+            }
+          }
+        }),
+        // Delete all corpus items associated with the entity
+        prisma.new_corpus.deleteMany({
+          where: {
+            id: {
+              in: entityIds
+            }
+          }
+        }),
+
+        // Delete the entity (company)
+        prisma.entity.deleteMany({
+          where: {
+            id: {
+              in: entityIds
+            }
+          }
+        })
+      ])
+    }
     await update_job_status(job.id, "completed");
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
