@@ -34,11 +34,17 @@ const TOKEN_EXPIRATION_DAYS = 7
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - TOKEN_EXPIRATION_DAYS * MILLISECONDS_IN_DAY);
+    const startTime = new Date(Date.now())
+    const sevenDaysAgo = new Date(startTime.getTime() - TOKEN_EXPIRATION_DAYS * MILLISECONDS_IN_DAY);
 
+
+    console.info(`[cleanup] Starting cleanup job (id=${job.id}) at ${startTime.toISOString()}`);
     let hasMoreRecords = true;
-
+    let batch = 1;
     while (hasMoreRecords){
+
+      console.info(`[cleanup] Processing batch ${batch}...`);
+
       const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
           createdAt: {
@@ -54,6 +60,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       });
 
       if (expiredTokens.length === 0){
+        console.info(`[cleanup] No more expired tokens found. Stopping at batch ${batch}.`);
         hasMoreRecords = false;
         break;
       }
@@ -74,6 +81,10 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       })
       const relationshipIds = relationships.map(relationship => relationship.id)
 
+      console.info( `[cleanup] Batch ${batch} prepared: ${entityIds.length} entities , ${productIds.length} products,  ${tokens.length} tokens and 
+                ${relationshipIds.length} relationships to delete
+            ` );
+
       await prisma.$transaction([
         // Delete relationships
         prisma.relationship.deleteMany({
@@ -86,7 +97,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         // Delete tokens
         prisma.publicFormsTokens.deleteMany({
           where: {
-            id: {
+            token: {
               in: tokens
             }
           }
@@ -94,7 +105,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         // Delete all corpus items associated with the entity
         prisma.new_corpus.deleteMany({
           where: {
-            id: {
+            entity_id: {
               in: entityIds
             }
           }
@@ -109,10 +120,16 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           }
         })
       ])
+
+      console.info( `[cleanup] Batch ${batch} deleted: ${entityIds.length} entities , ${productIds.length} products,  ${tokens.length} tokens and 
+                ${relationshipIds.length} relationships.
+            ` );
+
+      batch++;
     }
     await update_job_status(job.id, "completed");
   } catch (error) {
-    console.error("Error cleaning up unsubmitted forms:", error);
+    console.error(`[cleanup] Job ${job.id} failed at ${new Date().toISOString()}: `, error);
     await update_job_status(job.id, "failed");
     throw error;
   }
