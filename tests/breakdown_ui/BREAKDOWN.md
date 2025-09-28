@@ -93,4 +93,7 @@ Portfolio Overview Page
         └── GroupRow ..       
 ```
 
+### One Tradeoff made
+- Choose to have Group, Subgroup and DataRows, instead of single component
+- This increases number of components, and complexity (for small data) but it is going to be scalable, and its going to be easier to read
 
