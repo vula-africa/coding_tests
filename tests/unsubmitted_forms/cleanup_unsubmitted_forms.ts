@@ -47,28 +47,43 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         },
       });
 
+      // Build transaction operations dynamically
+      const operations = [];
+
+      // Delete relationship if it exists
       if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
+        operations.push(
           prisma.relationship.delete({
             where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
+          })
+        );
+      }
+
+      // Always delete the token
+      operations.push(
+        prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        })
+      );
+
+      // Delete corpus items and entity only if entityId exists
+      if (token.entityId) {
+        operations.push(
           prisma.new_corpus.deleteMany({
             where: {
-              entity_id: token.entityId || "",
+              entity_id: token.entityId,
             },
-          }),
-          // Delete the entity (company)
+          })
+        );
+
+        operations.push(
           prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+            where: { id: token.entityId },
+          })
+        );
       }
+
+      await prisma.$transaction(operations);
     }
 
     await update_job_status(job.id, "completed");
