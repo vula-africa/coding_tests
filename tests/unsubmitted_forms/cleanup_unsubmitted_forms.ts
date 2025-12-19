@@ -40,35 +40,41 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: 'new',
-        },
-      });
-
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || '',
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || '' },
-          }),
-        ]);
+      // Guard against missing entityId; delete only the token in that case
+      if (!token.entityId) {
+        console.warn(
+          `cleanup_unsubmitted_forms: token ${token.token} has no entityId; deleting token only`
+        );
+        await prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        });
+        continue;
       }
+
+      await prisma.$transaction([
+        // Delete any "new" relationships for this entity + product
+        prisma.relationship.deleteMany({
+          where: {
+            entity_id: token.entityId,
+            product_id: token.productId,
+            status: "new",
+          },
+        }),
+        // Delete all corpus items associated with the entity
+        prisma.new_corpus.deleteMany({
+          where: {
+            entity_id: token.entityId,
+          },
+        }),
+        // Delete the token
+        prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        }),
+        // Delete the entity (company)
+        prisma.entity.delete({
+          where: { id: token.entityId },
+        }),
+      ]);
     }
 
     await update_job_status(job.id, 'completed');
