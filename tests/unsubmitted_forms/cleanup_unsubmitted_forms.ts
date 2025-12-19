@@ -39,6 +39,8 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       select: { token: true, entityId: true, productId: true },
     });
 
+    console.log(`cleanup_unsubmitted_forms: found ${expiredTokens.length} expired tokens`);
+
     for (const token of expiredTokens) {
       // Guard against missing entityId; delete only the token in that case
       if (!token.entityId) {
