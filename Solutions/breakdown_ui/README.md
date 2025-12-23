@@ -10,8 +10,6 @@ Created a comprehensive component breakdown for the Rural Agri Overview dashboar
 - **File:** `Breakdown_UI_Challenge.drawio` (Draw.io format)
 - **Format:** Visual wireframe diagram showing component hierarchy
 - **Visual Convention:** Color-coded components to indicate reusability
-  - **Green/Blue/Brown** = Reusable components
-  - **Purple/Orange** = Page-specific components
 
 ### 2. Component Architecture Identified
 
