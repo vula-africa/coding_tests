@@ -30,7 +30,15 @@ import { Prisma } from "@prisma/client";
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   //Find forms that were created 7 days ago and have not been submitted
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  console.info("[cleanup] Job started", {
+    jobId: job.id,
+    cutoff: sevenDaysAgo.toISOString(),
+  });
+
   try {
+    /**
+     * 1. Fetch expired, unsubmitted tokens
+     */
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
@@ -46,19 +54,35 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       },
     });
 
+    console.info("[cleanup] Expired tokens fetched", {
+      jobId: job.id,
+      count: expiredTokens.length,
+    });
+
     if (expiredTokens.length === 0) {
       await update_job_status(job.id, "completed");
       return;
     }
 
+    /**
+     * 2. Group tokens by entity to avoid duplicate deletes
+     */
     const entityIds = [
       ...new Set(
         expiredTokens.map((t: { entityId: any }) => t.entityId).filter(Boolean)
       ),
     ];
 
+    console.info("[cleanup] Entities identified for cleanup", {
+      jobId: job.id,
+      entityCount: entityIds.length,
+    });
+
     for (const entityId of entityIds) {
       await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        /**
+         * 3. Ensure entity has no submitted forms
+         */
         const hasSubmittedForms = await tx.publicFormsTokens.count({
           where: {
             entityId,
@@ -68,7 +92,19 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           },
         });
 
-        if (hasSubmittedForms > 0) return;
+        if (hasSubmittedForms > 0) {
+          console.info("[cleanup] Skipping entity — submitted forms exist", {
+            jobId: job.id,
+            entityId,
+            submittedFormsCount: hasSubmittedForms,
+          });
+
+          return;
+        }
+
+        /**
+         * 4. Delete unsubmitted tokens
+         */
 
         await tx.publicFormsTokens.deleteMany({
           where: {
@@ -98,12 +134,19 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             id: entityId,
           },
         });
+        console.info("[cleanup] Entity deleted", {
+          jobId: job.id,
+          entityId,
+        });
       });
     }
 
+    console.info("[cleanup] Job completed successfully", {
+      jobId: job.id,
+    });
     await update_job_status(job.id, "completed");
   } catch (error) {
-    console.error("Error cleaning up unsubmitted form", {
+    console.error("[cleanup] Job failed", {
       jobId: job.id,
       error,
     });
