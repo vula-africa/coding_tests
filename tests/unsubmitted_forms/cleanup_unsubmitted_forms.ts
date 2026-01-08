@@ -29,16 +29,12 @@ import { update_job_status } from "./generic_scheduler";
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    const cutoffDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
+          lt: cutoffDate, // but less than 7 days ago + 1 day
         },
       },
     });
@@ -52,26 +48,56 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       });
 
       if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+        try {
+          await prisma.$transaction([
+        // Delete relationship first
+        prisma.relationship.delete({
+          where: { id: relationship.id },
+        }),
+        // Delete all corpus items associated with the entity
+        prisma.new_corpus.deleteMany({
+          where: {
+            entity_id: token.entityId,
+          },
+        }),
+        // Delete the entity
+        prisma.entity.delete({
+          where: { id: token.entityId },
+        }),
+        // Delete the token last
+        prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        }),
+          ]);
+        } catch (transactionError) {
+          console.error(`Failed to delete expired token ${token.token}:`, transactionError);
+          // Continue with next token instead of failing entire job
+          continue;
+        }
+      } else {
+        // If no relationship found, still delete the token and entity
+        try {
+          await prisma.$transaction([
+        // Delete all corpus items associated with the entity
+        prisma.new_corpus.deleteMany({
+          where: {
+            entity_id: token.entityId,
+          },
+        }),
+        // Delete the entity
+        prisma.entity.delete({
+          where: { id: token.entityId },
+        }),
+        // Delete the token last
+        prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        }),
+          ]);
+        } catch (transactionError) {
+          console.error(`Failed to delete expired token ${token.token}:`, transactionError);
+          // Continue with next token instead of failing entire job
+          continue;
+        }
       }
     }
 
