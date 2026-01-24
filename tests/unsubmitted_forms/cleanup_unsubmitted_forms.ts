@@ -48,28 +48,34 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         },
       });
 
+      // build transaction array - delete in order that respects FK constraints
+      const deleteOperations = [
+        // delete token first
+        prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        }),
+        // delete corpus items before entity (they reference entity_id)
+        prisma.new_corpus.deleteMany({
+          where: {
+            entity_id: token.entityId || "",
+          },
+        }),
+        // delete entity last since other things reference it
+        prisma.entity.delete({
+          where: { id: token.entityId || "" },
+        }),
+      ];
+
+      // only delete relationship if one exists
       if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
+        deleteOperations.unshift(
           prisma.relationship.delete({
             where: { id: relationship.id },
           }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+        );
       }
+
+      await prisma.$transaction(deleteOperations);
     }
 
     await update_job_status(job.id, "completed");
