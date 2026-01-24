@@ -30,10 +30,12 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7 days in ms
 
-    // fetch only the fields we need to build our delete queries
+    // fetch only unsubmitted tokens older than 7 days
+    // submittedAt being null means the form was never submitted
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: { lt: sevenDaysAgo },
+        submittedAt: null,
       },
       select: { token: true, entityId: true, productId: true },
     });
@@ -44,14 +46,22 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       return;
     }
 
-    // collect ids for batch deletion - filter out nulls
-    const tokenStrings = expiredTokens.map((t) => t.token);
-    const entityIds = expiredTokens
-      .map((t) => t.entityId)
-      .filter((id): id is string => id !== null && id !== undefined);
-    const productIds = expiredTokens
-      .map((t) => t.productId)
-      .filter((id): id is string => id !== null && id !== undefined);
+    // collect unique ids for batch deletion - dedupe to reduce query size
+    const tokenStrings = [...new Set(expiredTokens.map((t) => t.token))];
+    const entityIds = [
+      ...new Set(
+        expiredTokens
+          .map((t) => t.entityId)
+          .filter((id): id is string => id !== null && id !== undefined),
+      ),
+    ];
+    const productIds = [
+      ...new Set(
+        expiredTokens
+          .map((t) => t.productId)
+          .filter((id): id is string => id !== null && id !== undefined),
+      ),
+    ];
 
     // batch delete in a single transaction - order matters for FK constraints
     await prisma.$transaction([
