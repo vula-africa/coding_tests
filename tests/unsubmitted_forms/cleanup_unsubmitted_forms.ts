@@ -29,49 +29,74 @@ import { update_job_status } from "./generic_scheduler";
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
-
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // I added * 1000 to convert days to milliseconds
+    // I changed the query to find tokens older than 7 days (lt instead of gte/lt range)
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
+          lt: sevenDaysAgo, // I used the lt operator to find tokens that were created before 7 days ago
         },
       },
     });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+    // I fixed the N+1 query problem - fetch all relationships in one query instead of per token
+    const productIds = expiredTokens.map(t => t.productId).filter((id): id is string => id != null);
+    const entityIds = expiredTokens.map(t => t.entityId).filter((id): id is string => id != null);
+    // I added entity_id filter to prevent deleting relationships from other entities in shared-product scenarios
+    const relationships = await prisma.relationship.findMany({
+      where: {
+        product_id: { in: productIds },
+        entity_id: { in: entityIds },
+        status: "new",
+      },
+    });
+    // I created a lookup map for O(1) access using composite key (productId + entityId)
+    const relationshipMap = new Map(relationships.map(r => [`${r.product_id}:${r.entity_id}`, r]));
 
+    for (const token of expiredTokens) {
+      const relationship = relationshipMap.get(`${token.productId || ""}:${token.entityId || ""}`);
+
+      // I fixed the issue of deleting tokens and entities even if no relationship exists (unsubmitted forms may not have relationships)
       if (relationship) {
-        await prisma.$transaction([
+        // I used an interactive transaction for proper error handling and atomicity
+        await prisma.$transaction(async (tx) => {
           // Delete relationship
-          prisma.relationship.delete({
+          await tx.relationship.delete({
             where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
+          });
+          // Delete the token
+          await tx.publicFormsTokens.delete({
             where: { token: token.token },
-          }),
+          });
           // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
+          await tx.new_corpus.deleteMany({
             where: {
               entity_id: token.entityId || "",
             },
-          }),
+          });
           // Delete the entity (company)
-          prisma.entity.delete({
+          await tx.entity.delete({
             where: { id: token.entityId || "" },
-          }),
-        ]);
+          });
+        });
+      } else {
+        // I fixed the issue of deleting tokens and entities even if no relationship exists (unsubmitted forms may not have relationships)
+        await prisma.$transaction(async (tx) => {
+          // Delete the token
+          await tx.publicFormsTokens.delete({
+            where: { token: token.token },
+          });
+          // Delete all corpus items associated with the entity
+          await tx.new_corpus.deleteMany({
+            where: {
+              entity_id: token.entityId || "",
+            },
+          });
+          // Delete the entity (company)
+          await tx.entity.delete({
+            where: { id: token.entityId || "" },
+          });
+        });
       }
     }
 
