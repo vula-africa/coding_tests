@@ -54,7 +54,6 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       .filter((id): id is string => id !== null && id !== undefined);
 
     // batch delete in a single transaction - order matters for FK constraints
-    // NOTE: for very large datasets (50k+), consider chunking to avoid DB limits on IN clauses
     await prisma.$transaction([
       // delete relationships tied to these products that are still "new" (unsubmitted)
       prisma.relationship.deleteMany({
