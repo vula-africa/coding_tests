@@ -68,8 +68,8 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       .filter(r => productIds.includes(r.product_id || '')) 
       .map(r => r.id);
 
-
-    // FIX 4: Transactional Bulk Delete (Performance & Atomicity)
+    
+    // FIX 4: Transactional Bulk Delete (Performance)
     await prisma.$transaction([
       // 1. Delete Corpus items (Child of Entity)
       prisma.new_corpus.deleteMany({
