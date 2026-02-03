@@ -26,59 +26,78 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+const BATCH_SIZE = 100;
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
+  const stats = {
+    tokensFound: 0,
+    tokensDeleted: 0,
+    errors: 0,
+    skipped: 0,
+  };
+
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    let skip = 0;
 
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
-      },
-    });
-
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
+    while (true) {
+      const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
-          product_id: token.productId,
+          createdAt: { lte: sevenDaysAgo },
+        },
+        skip: skip,
+        take: BATCH_SIZE,
+      });
+
+      if (expiredTokens.length === 0) break;
+
+      stats.tokensFound += expiredTokens.length;
+
+      const productIds = expiredTokens.map(t => t.productId).filter(Boolean);
+      const relationships = await prisma.relationship.findMany({
+        where: {
+          product_id: { in: productIds },
           status: "new",
         },
       });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+      const relationshipMap = new Map(
+        relationships.map(r => [r.product_id, r])
+      );
+
+      for (const token of expiredTokens) {
+        try {
+          const relationship = relationshipMap.get(token.productId);
+
+          if (!relationship || !token.entityId) {
+            stats.skipped++;
+            continue;
+          }
+
+          await prisma.$transaction(async (tx) => {
+            await tx.relationship.delete({ where: { id: relationship.id } });
+            await tx.publicFormsTokens.delete({ where: { id: token.id } });
+            await tx.new_corpus.deleteMany({ where: { entity_id: token.entityId } });
+            await tx.entity.delete({ where: { id: token.entityId } });
+          });
+
+          stats.tokensDeleted++;
+
+        } catch (error) {
+          stats.errors++;
+          console.error(`Error processing token ${token.token}:`, error);
+        }
       }
+
+      skip += BATCH_SIZE;
     }
 
+    console.log(`Cleanup complete: ${stats.tokensDeleted} deleted, ${stats.skipped} skipped, ${stats.errors} errors`);
     await update_job_status(job.id, "completed");
+
   } catch (error) {
-    console.error("Error cleaning up unsubmitted forms:", error);
+    console.error("Cleanup failed:", error, stats);
     await update_job_status(job.id, "failed");
-    throw error;
   }
 };
