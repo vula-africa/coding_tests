@@ -18,6 +18,8 @@ We're learning and growing just like you are, and we appreciate your help in mak
 
 In the email inviting you to complete the tests, you should have been told which tests to complete.
 
-For senior roles, we ask you to complete the `architecture_challenge`, `unsubmitted_forms` and `end_of_week_issue` tests.
+For **leadership roles** (Head of Engineering, VP Engineering), we ask you to complete the `monday_inbox`, `architecture_challenge`, `unsubmitted_forms`, and `end_of_week_issues` tests.
 
-For mid-level roles, we ask you to complete the `batch_processing`, `breakdown_ui` and `end_of_week_issue` tests.
+For **senior roles**, we ask you to complete the `architecture_challenge`, `unsubmitted_forms` and `end_of_week_issues` tests.
+
+For **mid-level roles**, we ask you to complete the `batch_processing`, `breakdown_ui` and `end_of_week_issues` tests.
