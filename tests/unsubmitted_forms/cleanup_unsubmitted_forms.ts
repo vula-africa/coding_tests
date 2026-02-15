@@ -22,60 +22,160 @@
  */
 
 // For the purpose of this test you can ignore that the imports are not working.
-import type { JobScheduleQueue } from "@prisma/client";
+import type { JobScheduleQueue, Prisma } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+// Process cleanup in manageable chunks to reduce DB load and memory footprint
+const BATCH_SIZE = 500;
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
+  const jobStartTime = new Date();
+  let totalDeletedTokens = 0;
+  let totalFailedChunks = 0;
+
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    await update_job_status(job.id, "in_progress");
+    // Use UTC midnight cutoff 7 days ago to avoid drift when the job runs late
+    const cutoff = new Date();
+    cutoff.setUTCHours(0, 0, 0, 0);
+    cutoff.setUTCDate(cutoff.getUTCDate() - 7);
 
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
-      },
-    });
+    console.log(`[Cleanup Job ${job.id}] Starting. Deleting tokens created before (UTC cutoff) ${cutoff.toISOString()}`);
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
+    let lastCreatedAt: Date | undefined = undefined;
+    let lastToken: string | undefined = undefined;
+    let hasMore = true;
+
+    while (hasMore) {
+      const expiredTokensPage = await prisma.publicFormsTokens.findMany({
         where: {
-          product_id: token.productId,
-          status: "new",
+          // Only records strictly older than the UTC cutoff
+          createdAt: { lt: cutoff },
+          // Composite-cursor style pagination: (createdAt, token)
+          ...(lastCreatedAt
+            ? {
+                OR: [
+                  { createdAt: { gt: lastCreatedAt } },
+                  { AND: [{ createdAt: lastCreatedAt }, { token: { gt: lastToken as string } }] },
+                ],
+              }
+            : {}),
         },
+        select: {
+          token: true,
+          entityId: true,
+          productId: true,
+          createdAt: true,
+        },
+        orderBy: [
+          { createdAt: "asc" },
+          { token: "asc" },
+        ],
+        take: BATCH_SIZE,
       });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
+      if (expiredTokensPage.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      const tokenIdsInBatch = expiredTokensPage.map((t) => t.token);
+      const entityIdsInBatch = [
+        ...new Set(expiredTokensPage.map((t) => t.entityId).filter(Boolean) as string[]),
+      ];
+      // Process this page with retry budget; advance cursor only on success
+      let processedThisPage = false;
+      let retriesForPage = 0;
+      const MAX_RETRIES = 3;
+      while (!processedThisPage) {
+        try {
+        // Determine which entities are safe to delete (no other unexpired tokens reference them)
+        let entityIdsSafeToDelete: string[] = [];
+        if (entityIdsInBatch.length > 0) {
+          const entitiesWithOtherTokens = await prisma.publicFormsTokens.findMany({
             where: {
-              entity_id: token.entityId || "",
+              entityId: { in: entityIdsInBatch },
+              token: { notIn: tokenIdsInBatch },
+              // If any other token exists for this entity (expired or not) and is not in this batch,
+              // keep the entity to avoid FK violations with out-of-batch tokens.
             },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+            select: { entityId: true },
+            distinct: ["entityId"],
+          });
+          const toKeep = new Set(entitiesWithOtherTokens.map((e) => e.entityId!).filter(Boolean));
+          entityIdsSafeToDelete = entityIdsInBatch.filter((id) => !toKeep.has(id));
+        }
+        const ops: Prisma.PrismaPromise<unknown>[] = [];
+        // Delete dependent data first (children before parents to avoid FK violations)
+        if (entityIdsSafeToDelete.length > 0) {
+          ops.push(
+            prisma.new_corpus.deleteMany({ where: { entity_id: { in: entityIdsSafeToDelete } } })
+          );
+        }
+        
+        // Optional: clean up relationships with status "new" tied to these entities or products
+        const productIdsInBatch = [
+          ...new Set(expiredTokensPage.map((t) => t.productId).filter(Boolean) as string[]),
+        ];
+        // Only run relationship cleanup when we are deleting entities to avoid over-deleting unrelated rows
+        if (productIdsInBatch.length > 0 && entityIdsSafeToDelete.length > 0) {
+          ops.push(
+            prisma.relationship.deleteMany({
+              where: {
+                product_id: { in: productIdsInBatch },
+                status: "new",
+                // Restrict by entity to avoid unrelated deletes
+                entity_id: { in: entityIdsSafeToDelete },
+              },
+            })
+          );
+        }
+        
+        // Delete tokens in batch
+        ops.push(
+          prisma.publicFormsTokens.deleteMany({ where: { token: { in: tokenIdsInBatch } } })
+        );
+        
+        // Delete entities that are safe to delete (after all children including relationships and tokens)
+        if (entityIdsSafeToDelete.length > 0) {
+          ops.push(prisma.entity.deleteMany({ where: { id: { in: entityIdsSafeToDelete } } }));
+        }
+
+        await prisma.$transaction(ops);
+        totalDeletedTokens += tokenIdsInBatch.length;
+        console.log(
+          `[Cleanup Job ${job.id}] Deleted ${tokenIdsInBatch.length} tokens. Deleted entities: ${entityIdsSafeToDelete.length}.`
+        );
+          // advance cursor only on success
+          const last = expiredTokensPage[expiredTokensPage.length - 1];
+          lastCreatedAt = last.createdAt;
+          lastToken = last.token;
+          processedThisPage = true;
+        } catch (batchError) {
+          totalFailedChunks += 1;
+          retriesForPage += 1;
+          console.error(
+            `[Cleanup Job ${job.id}] Failed batch delete for tokens: ${tokenIdsInBatch.join(", ")}. Attempt ${retriesForPage}/${MAX_RETRIES}.`,
+            batchError
+          );
+          if (retriesForPage < MAX_RETRIES) {
+            // brief backoff before retrying the same page
+            await new Promise((r) => setTimeout(r, Math.min(1000, 100 * retriesForPage)));
+            continue; // retry same page; cursor unchanged
+          }
+          // Exhausted retries; signal failure so the job status is set to "failed"
+          throw new Error(
+            `[Cleanup Job ${job.id}] Exhausted retries for current page (tokens: ${tokenIdsInBatch.join(", ")}).`
+          );
+        }
       }
     }
 
     await update_job_status(job.id, "completed");
+    console.log(
+      `[Cleanup Job ${job.id}] Completed in ${new Date().getTime() - jobStartTime.getTime()}ms. Deleted tokens: ${totalDeletedTokens}. Failed chunks: ${totalFailedChunks}.`
+    );
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
     await update_job_status(job.id, "failed");
