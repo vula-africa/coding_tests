@@ -1,26 +1,3 @@
-/* Context: 
- This is a scheduled job that runs every day at midnight to clean up forms that users started filling in but didn't submit which are older than 7 days. 
- When a user visits a public form, a token is generated and stored in the database.
- This token is used to identify the user and link the answers to the entity.
- An entity is the owner of data in the database, separated as it could be a business or an individual but has been decoupled from a login/user.
- If the user does not submit the form, the token and the entity should be deleted after 7 days.
- This is to prevent the database from being cluttered with unused tokens and entities.
- */
-
-/* Task Instructions:
- * 1. Read and understand the code below
- * 2. Identify ALL issues in the code (there are multiple)
- * 3. Fix the issues and create a working solution
- * 4. Create a PR with clear commit messages
- * 5. Record a 3-5 minute Loom video explaining:
- *    - What issues you found
- *    - How you fixed them
- *    - Any trade-offs you considered
- *
- * Focus on: correctness, performance, error handling, and code clarity
- * Expected time: 45-60 minutes
- */
-
 // For the purpose of this test you can ignore that the imports are not working.
 import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
@@ -28,51 +5,76 @@ import { update_job_status } from "./generic_scheduler";
 
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    // Calculate the date 7 days ago at midnight for accurate "older than 7 days" filtering
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Set to start of current day
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
+    // Find all tokens older than 7 days (createdAt < sevenDaysAgo)
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
+          lt: sevenDaysAgo,
         },
       },
     });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+    if (expiredTokens.length === 0) {
+      await update_job_status(job.id, "completed");
+      return;
+    }
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+    // Collect productIds to batch query relationships
+    const productIds = expiredTokens.map((token) => token.productId);
+    const relationships = await prisma.relationship.findMany({
+      where: {
+        product_id: {
+          in: productIds,
+        },
+        status: "new",
+      },
+    });
+
+    // Map tokens by productId for quick lookup
+    const tokenMap = new Map(expiredTokens.map((token) => [token.productId, token]));
+
+    // Collect IDs for batch deletion (only for unsubmitted forms with matching relationships)
+    const relIds: string[] = [];
+    const tokenValues: string[] = [];
+    const entityIds: string[] = [];
+
+    for (const rel of relationships) {
+      const token = tokenMap.get(rel.product_id);
+      if (token) {
+        relIds.push(rel.id);
+        tokenValues.push(token.token);
+        if (token.entityId) {
+          entityIds.push(token.entityId);
+        }
       }
+    }
+
+    // Perform batch deletes in a single transaction if there are items to delete
+    if (relIds.length > 0) {
+      await prisma.$transaction([
+        // Delete relationships
+        prisma.relationship.deleteMany({
+          where: { id: { in: relIds } },
+        }),
+        // Delete tokens
+        prisma.publicFormsTokens.deleteMany({
+          where: { token: { in: tokenValues } },
+        }),
+        // Delete all corpus items associated with the entities
+        prisma.new_corpus.deleteMany({
+          where: { entity_id: { in: entityIds } },
+        }),
+        // Delete the entities
+        prisma.entity.deleteMany({
+          where: { id: { in: entityIds } },
+        }),
+      ]);
     }
 
     await update_job_status(job.id, "completed");
