@@ -29,49 +29,60 @@ import { update_job_status } from "./generic_scheduler";
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
+        createdAt: { lt: sevenDaysAgo },
+      },
+      select: {
+        token: true,
+        entityId: true,
+        productId: true,
       },
     });
 
     for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
+      try {
+        await prisma.$transaction(async (tx) => {
+          
+          const relationships = await tx.relationship.findMany({
             where: {
-              entity_id: token.entityId || "",
+              product_id: token.productId,
+              status: "new",
             },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+          });
+
+          if (relationships.length > 0) {
+            
+            await tx.relationship.deleteMany({
+              where: { id: { in: relationships.map((r) => r.id) } },
+            });
+          }
+
+      
+          await tx.publicFormsTokens.delete({
+            where: { token: token.token },
+          });
+
+          if (token.entityId) {
+            
+            await tx.new_corpus.deleteMany({
+              where: { entity_id: token.entityId },
+            });
+
+            await tx.entity.delete({
+              where: { id: token.entityId },
+            });
+          }
+        });
+      } catch (innerError) {
+        console.error(
+          `Failed cleanup for token ${token.token} (entity ${token.entityId}):`,
+          innerError
+        );
+       
       }
     }
 
