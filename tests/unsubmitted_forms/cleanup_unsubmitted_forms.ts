@@ -51,10 +51,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           },
           ...(lastId ? { id: { gt: lastId } } : {}), // cursor-based pagination
         },
-        orderBy: [
-          { createdAt: "asc" },
-          { id: "asc" }, // deterministic ordering, break ties with id
-        ],
+        orderBy: { id: "asc" }, // consistent with cursor filter
         take: BATCH_SIZE,
       });
 
