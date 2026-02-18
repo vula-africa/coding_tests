@@ -26,53 +26,140 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+const CHUNK_SIZE = 2000;
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    // Find forms that were created more than 7 days ago and have not been submitted
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
-      },
-    });
-
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
+    while (true) {
+      // I assume publicFormsTokens holds a many-to-many relationship between a product(form) and a token generated for the entity when filling in the form.
+      // for exeample table can hold three tokens each for three forms(a one-to-one) all for one entity
+      const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
-          product_id: token.productId,
-          status: "new",
+          createdAt: {
+            lt: sevenDaysAgo, // older than 7 days
+          },
         },
+        select: {
+          token: true,
+          productId: true,
+          entityId: true,
+        },
+        take: CHUNK_SIZE
       });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+      // When no records are found or loop has finished all chunks
+      if (expiredTokens.length === 0) {
+        await update_job_status(job.id, "completed");
+        return;
       }
+
+      // Now I have an array of expired tokens
+      // I assume this is the sample of expiredTokens:
+      // [
+      //   {
+      //     productId: "123", --> id ofthe form being filled in by the entity
+      //     entityId: "456",
+      //     token: "789",
+      //     createdAt: "2026-01-01",
+      //   }
+      // ]
+
+      // I assume a product is the form being filled in by the entity.
+      // I assume relationship table holds a one-to-many relationship between an entity and products(forms filled) and has a status - essentially an entity can partially fill multiple forms.
+      // [
+      //   {
+      //     id: "123",
+      //     productId: "123",
+      //     entityId: "456",
+      //     status: "new",
+      //   }
+      // ]
+
+      // I assume a new_corpus holds a one-to-many relationship between an entity and answers they already entered into a form.
+      // [
+      //   {
+      //     id: "123",
+      //     productId: "123",
+      //     entityId: "456",
+      //     type: "form",
+      //     data: { answers: [
+      //       { // like a JSONB of answers entered into the form
+        //       name: "John Doe",
+        //       email: "john.doe@example.com",
+        //       phone: "1234567890",
+        //     }]},
+      //     createdAt: "2026-01-01",
+      //   }
+      // ]
+      // Now I need to delete the relationship, the token, and all corpus items associated with the entity.
+
+      // Get product ids and remove duplicates
+      const productsToDelete = [...new Set(expiredTokens.map((t: any) => t.productId))]
+
+      // Get token ids and remove duplicates
+      const tokensToDelete = [...new Set(expiredTokens.map((t: any) => t.token))]
+
+      // Get entityIds and remove duplicates
+      const entityIdToDelete = [
+        ...new Set(
+          expiredTokens
+        .map((e: any)=> e.entityId)
+        .filter((id: any): id is string => Boolean(id)) // filter out falsy values
+      )]
+
+      // find relationships that are still new
+      const relationshipsToDelete = await prisma.relationship.findMany({
+        where: {
+          product_id: { in: productsToDelete },
+          status: "new",
+          entityId: { in: entityIdToDelete }
+        },
+        select: { id: true },
+      })
+
+      const relationshipsIdsToDelete = relationshipsToDelete.map((r: any) => r.id)
+
+      // I need to use a transaction to ensure that the operations are atomic.
+      await prisma.$transaction([
+        // Delete relationship
+        prisma.relationship.deleteMany({
+          where: {
+            id: {
+              in: relationshipsIdsToDelete
+            }
+          },
+        }),
+
+        // Delete corpus
+        prisma.new_corpus.deleteMany({
+          where: {
+            product_id: {
+              in: productsToDelete
+            }
+          }
+        }),
+
+        // Delete the token
+        prisma.publicFormsTokens.deleteMany({
+          where: {
+            token: {
+              in: tokensToDelete
+            }
+          }
+        }),
+
+        // Delete entities
+        prisma.entity.deleteMany({
+          where: {
+            id: {
+              in: entityIdToDelete
+            }
+          }
+        })
+      ])
     }
 
     await update_job_status(job.id, "completed");
