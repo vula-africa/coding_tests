@@ -34,7 +34,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     while (true) {
-      // I assume publicFormsTokens holds a one-to-one relationship between a product(form) and a token generated for the entity when filling in the form.
+      // I assume publicFormsTokens holds a many-to-many relationship between a product(form) and a token generated for the entity when filling in the form.
       // for exeample table can hold three tokens each for three forms(a one-to-one) all for one entity
       const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
@@ -53,7 +53,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       // When no records are found or loop has finished all chunks
       if (expiredTokens.length === 0) {
         await update_job_status(job.id, "completed");
-        break
+        return;
       }
 
       // Now I have an array of expired tokens
@@ -114,16 +114,11 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       const relationshipsToDelete = await prisma.relationship.findMany({
         where: {
           product_id: { in: productsToDelete },
-          status: "new"
+          status: "new",
+          entityId: { in: entityIdToDelete }
         },
         select: { id: true },
       })
-
-      if (relationshipsToDelete.length === 0) {
-        // then end the job
-        await update_job_status(job.id, "completed");
-        return;
-      }
 
       const relationshipsIdsToDelete = relationshipsToDelete.map((r: any) => r.id)
 
@@ -141,8 +136,8 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         // Delete corpus
         prisma.new_corpus.deleteMany({
           where: {
-            entity_id: {
-              in: entityIdToDelete
+            product_id: {
+              in: productsToDelete
             }
           }
         }),
