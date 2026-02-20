@@ -54,3 +54,37 @@
 - Empowered Patrick explicitly: 'no approval needed to merge'
 
 ---
+
+# 2. End-of-Week Incident Response
+
+## Root cause
+
+- Model version regression: v1.3 shows 6–9x latency vs v1.2
+- 100% correlation: all timeouts on v1.3 across `/risk-score` and `/funding-approve`
+
+---
+
+## Immediate action (next 10 minutes)
+
+- Roll back traffic to v1.2
+- Verify latency recovery and confirm lender impact is resolved
+- Communicate status to stakeholders
+
+---
+
+## Prevention
+
+- Add performance regression gates in CI/CD (p95/p99 thresholds)
+- Canary deployments with auto-rollback on latency/error spikes
+- Version-specific monitoring and alerts
+
+---
+
+## Retro notes
+
+- Detection gap (customer-reported vs monitoring)
+- Missing performance tests for model changes
+- No canary safety net on rollout
+- Need faster incident comms playbook
+
+---
