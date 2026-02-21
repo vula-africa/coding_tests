@@ -14,7 +14,32 @@ export const cleanup_unsubmitted_forms = async (
       select: { token: true, entityId: true },
     });
 
+    const entityIds = expiredTokens
+      .map((token) => token.entityId)
+      .filter((id): id is string => Boolean(id));
+
     for (const token of expiredTokens) {
+      if (token.entityId) {
+        await prisma.relationship.deleteMany({
+          where: {
+            entity_id: token.entityId,
+            status: "new",
+          },
+        });
+
+        await prisma.new_corpus.deleteMany({
+          where: {
+            entity_id: token.entityId,
+          },
+        });
+
+        await prisma.entity.deleteMany({
+          where: {
+            id: token.entityId,
+          },
+        });
+      }
+
       await prisma.publicFormsTokens.delete({
         where: { token: token.token },
       });
