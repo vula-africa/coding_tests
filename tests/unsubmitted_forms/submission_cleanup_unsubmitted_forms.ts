@@ -1,4 +1,4 @@
-import type { JobScheduleQueue } from "@prisma/client";
+import type { JobScheduleQueue, Prisma } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
@@ -26,12 +26,14 @@ export const cleanup_unsubmitted_forms = async (
     }
 
     const entityIds = expiredTokens
-      .map((token) => token.entityId)
-      .filter((id): id is string => Boolean(id));
+      .map((token: { token: string; entityId: string | null }) => token.entityId)
+      .filter((id: string | null): id is string => Boolean(id));
 
-    const tokens = expiredTokens.map((token) => token.token);
+    const tokens = expiredTokens.map(
+      (token: { token: string; entityId: string | null }) => token.token
+    );
 
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       if (entityIds.length > 0) {
         await tx.relationship.deleteMany({
           where: {
