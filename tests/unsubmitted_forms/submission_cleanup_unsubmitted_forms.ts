@@ -9,6 +9,8 @@ export const cleanup_unsubmitted_forms = async (
 
   try {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    console.log("[Cleanup Job] Starting cleanup for tokens older than:", sevenDaysAgo);
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: { lt: sevenDaysAgo },
@@ -16,6 +18,12 @@ export const cleanup_unsubmitted_forms = async (
       select: { token: true, entityId: true },
       take: BATCH_SIZE,
     });
+
+    if (expiredTokens.length === 0) {
+      console.log("[Cleanup Job] No expired tokens found.");
+      await update_job_status(job.id, "completed");
+      return;
+    }
 
     const entityIds = expiredTokens
       .map((token) => token.entityId)
@@ -52,8 +60,13 @@ export const cleanup_unsubmitted_forms = async (
       });
     });
 
+    console.log(
+      `[Cleanup Job] Deleted ${tokens.length} tokens and ${entityIds.length} entities`
+    );
+
     await update_job_status(job.id, "completed");
   } catch (error) {
+    console.error("[Cleanup Job] Error:", error);
     await update_job_status(job.id, "failed");
     throw error;
   }
