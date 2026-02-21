@@ -90,4 +90,4 @@ Model version v1.3 has a critical performance regression. Every request using v1
 
 ## Loom Video
 
-https://www.loom.com/share/0d0649fe5e2c44ec906e7438dd93a98f
+- https://www.loom.com/share/0d0649fe5e2c44ec906e7438dd93a98f
