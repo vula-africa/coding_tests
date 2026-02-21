@@ -29,50 +29,43 @@ import { update_job_status } from "./generic_scheduler";
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // fixed milliseconds conversion here
 
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
+        createdAt: { lt: sevenDaysAgo }, // everything older than 7 days
+          submitted: false,                // never touch submitted forms
       },
     });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+    // If there are no expired tokens, we can mark the job as completed and exit early
+    if (expiredTokens.length === 0) {
+      await update_job_status(job.id, "completed");
+      return;
+    }
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
-      }
+    // Batch fetch relationships — no N+1 overhead
+    const productIds = expiredTokens.map((t) => t.productId);
+    const relationships = await prisma.relationship.findMany({
+      where: { product_id: { in: productIds }, status: "new" },
+    });
+    const relationshipMap = new Map(
+      relationships.map((r) => [r.product_id, r])
+    );
+
+    for (const token of expiredTokens) {
+      // Skip tokens with no entityId rather than falling back to ""
+      if (!token.entityId) continue;
+
+      const relationship = relationshipMap.get(token.productId);
+      if (!relationship) continue;
+
+      await prisma.$transaction([
+        prisma.relationship.delete({ where: { id: relationship.id } }),
+        prisma.publicFormsTokens.delete({ where: { token: token.token } }),
+        prisma.new_corpus.deleteMany({ where: { entity_id: token.entityId } }),
+        prisma.entity.delete({ where: { id: token.entityId } }),
+      ]);
     }
 
     await update_job_status(job.id, "completed");
