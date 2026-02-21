@@ -88,3 +88,12 @@
 - Need faster incident comms playbook
 
 ---
+
+# 3. Architecture Challenge
+
+## Deliverables
+
+- Architecture diagrams and trade-off walkthrough
+- Loom walkthroughs for design choices and scaling considerations
+
+---
