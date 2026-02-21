@@ -88,3 +88,14 @@
 - Need faster incident comms playbook
 
 ---
+
+# 3. Cleanup Unsubmitted Forms
+
+## Implementation highlights
+
+- 7-day expiry window for stale public form tokens
+- Scoped deletions to related entities and relationships
+- Batch cleanup with single transaction and guardrails
+- Structured logging and job status updates
+
+---
