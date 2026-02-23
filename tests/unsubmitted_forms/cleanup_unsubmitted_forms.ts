@@ -44,28 +44,44 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       return;
     }
 
-    // Batch fetch relationships — no N+1 overhead
-    const productIds = expiredTokens.map((t) => t.productId);
-    const relationships = await prisma.relationship.findMany({
-      where: { product_id: { in: productIds }, status: "new" },
-    });
-    const relationshipMap = new Map(
-      relationships.map((r) => [r.product_id, r])
-    );
-
+    //Batch fetching the relationship isn't the best approach because of the possibility of multiple tokens sharing the same product ID.
     for (const token of expiredTokens) {
-      // Skip tokens with no entityId rather than falling back to ""
-      if (!token.entityId) continue;
+      await prisma.$transaction(async (tx) => {
 
-      const relationship = relationshipMap.get(token.productId);
-      if (!relationship) continue;
+        // Delete all relationships associated with this token's product ID that are still in "new" status (i.e., they haven't been submitted yet).
+        await tx.relationship.deleteMany({
+          where: {
+            product_id: token.productId,
+            entity_id: token.entityId, // added this condition to ensure we only delete relationships associated with this token's entity
+            status: "new",
+          },
+        });
 
-      await prisma.$transaction([
-        prisma.relationship.delete({ where: { id: relationship.id } }),
-        prisma.publicFormsTokens.delete({ where: { token: token.token } }),
-        prisma.new_corpus.deleteMany({ where: { entity_id: token.entityId } }),
-        prisma.entity.delete({ where: { id: token.entityId } }),
-      ]);
+        // This is a bit of a hack, but we want to make sure we clean up any entities that were created for this form, but only if they aren't associated with any other relationships (which is why we check for the "new" status above).
+        if (token.entityId) {
+          const activeRelationshipCount = await tx.relationship.count({
+            where: {
+              entity_id: token.entityId,
+            },
+          });
+
+          if (activeRelationshipCount === 0) {
+            await tx.new_corpus.deleteMany({
+              where: { entity_id: token.entityId },
+            });
+
+            await tx.entity.deleteMany({
+              where: { id: token.entityId },
+            });
+          }
+        }
+
+        // Finally, delete the token itself.
+        await tx.publicFormsTokens.delete({
+          where: { token: token.token },
+        });
+
+      });
     }
 
     await update_job_status(job.id, "completed");
