@@ -5,65 +5,74 @@ import { update_job_status } from "./generic_scheduler";
 export const cleanup_unsubmitted_forms = async (
   job: JobScheduleQueue
 ) => {
-  const BATCH_SIZE = 1000;
+  const BATCH_SIZE = 500;
 
   try {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     console.log("[Cleanup Job] Starting cleanup for tokens older than:", sevenDaysAgo);
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: { lt: sevenDaysAgo },
-      },
-      select: { token: true, entityId: true },
-      take: BATCH_SIZE,
-    });
+    let totalTokensDeleted = 0;
+    let totalEntitiesDeleted = 0;
 
-    if (expiredTokens.length === 0) {
-      console.log("[Cleanup Job] No expired tokens found.");
-      await update_job_status(job.id, "completed");
-      return;
-    }
+    while (true) {
+      const expiredTokens = await prisma.publicFormsTokens.findMany({
+        where: {
+          createdAt: { lt: sevenDaysAgo },
+        },
+        select: { token: true, entityId: true },
+        take: BATCH_SIZE,
+      });
 
-    const entityIds = expiredTokens
-      .map((token: { token: string; entityId: string | null }) => token.entityId)
-      .filter((id: string | null): id is string => Boolean(id));
-
-    const tokens = expiredTokens.map(
-      (token: { token: string; entityId: string | null }) => token.token
-    );
-
-    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      if (entityIds.length > 0) {
-        await tx.relationship.deleteMany({
-          where: {
-            entity_id: { in: entityIds },
-            status: "new",
-          },
-        });
-
-        await tx.new_corpus.deleteMany({
-          where: {
-            entity_id: { in: entityIds },
-          },
-        });
-
-        await tx.entity.deleteMany({
-          where: {
-            id: { in: entityIds },
-          },
-        });
+      if (expiredTokens.length === 0) {
+        if (totalTokensDeleted === 0) {
+          console.log("[Cleanup Job] No expired tokens found.");
+        }
+        break;
       }
 
-      await tx.publicFormsTokens.deleteMany({
-        where: {
-          token: { in: tokens },
-        },
+      const entityIds = expiredTokens
+        .map((token: { token: string; entityId: string | null }) => token.entityId)
+        .filter((id: string | null): id is string => Boolean(id));
+
+      const tokens = expiredTokens.map(
+        (token: { token: string; entityId: string | null }) => token.token
+      );
+
+      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        if (entityIds.length > 0) {
+          await tx.relationship.deleteMany({
+            where: {
+              entity_id: { in: entityIds },
+              status: "new",
+            },
+          });
+
+          await tx.new_corpus.deleteMany({
+            where: {
+              entity_id: { in: entityIds },
+            },
+          });
+
+          await tx.entity.deleteMany({
+            where: {
+              id: { in: entityIds },
+            },
+          });
+        }
+
+        await tx.publicFormsTokens.deleteMany({
+          where: {
+            token: { in: tokens },
+          },
+        });
       });
-    });
+
+      totalTokensDeleted += tokens.length;
+      totalEntitiesDeleted += entityIds.length;
+    }
 
     console.log(
-      `[Cleanup Job] Deleted ${tokens.length} tokens and ${entityIds.length} entities`
+      `[Cleanup Job] Deleted ${totalTokensDeleted} tokens and ${totalEntitiesDeleted} entities`
     );
 
     await update_job_status(job.id, "completed");
