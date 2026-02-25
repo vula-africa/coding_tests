@@ -29,50 +29,59 @@ import { update_job_status } from "./generic_scheduler";
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
-    );
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // fixed milliseconds conversion here
 
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
+        createdAt: { lt: sevenDaysAgo }, // everything older than 7 days
+          submitted: false,                // never touch submitted forms
       },
     });
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+    // If there are no expired tokens, we can mark the job as completed and exit early
+    if (expiredTokens.length === 0) {
+      await update_job_status(job.id, "completed");
+      return;
+    }
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
+    //Batch fetching the relationship isn't the best approach because of the possibility of multiple tokens sharing the same product ID.
+    for (const token of expiredTokens) {
+      await prisma.$transaction(async (tx) => {
+
+        // Delete all relationships associated with this token's product ID that are still in "new" status (i.e., they haven't been submitted yet).
+        await tx.relationship.deleteMany({
+          where: {
+            product_id: token.productId,
+            entity_id: token.entityId, // added this condition to ensure we only delete relationships associated with this token's entity
+            status: "new",
+          },
+        });
+
+        // This is a bit of a hack, but we want to make sure we clean up any entities that were created for this form, but only if they aren't associated with any other relationships (which is why we check for the "new" status above).
+        if (token.entityId) {
+          const activeRelationshipCount = await tx.relationship.count({
             where: {
-              entity_id: token.entityId || "",
+              entity_id: token.entityId,
             },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
-      }
+          });
+
+          if (activeRelationshipCount === 0) {
+            await tx.new_corpus.deleteMany({
+              where: { entity_id: token.entityId },
+            });
+
+            await tx.entity.deleteMany({
+              where: { id: token.entityId },
+            });
+          }
+        }
+
+        // Finally, delete the token itself.
+        await tx.publicFormsTokens.delete({
+          where: { token: token.token },
+        });
+
+      });
     }
 
     await update_job_status(job.id, "completed");
