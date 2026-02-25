@@ -3,6 +3,7 @@
  When a user visits a public form, a token is generated and stored in the database.
  This token is used to identify the user and link the answers to the entity.
  An entity is the owner of data in the database, separated as it could be a business or an individual but has been decoupled from a login/user.
+ This entity is a profile within Vula which it will match funding opportunities and send then alerts about their business profile.
  If the user does not submit the form, the token and the entity should be deleted after 7 days.
  This is to prevent the database from being cluttered with unused tokens and entities.
  */
@@ -31,7 +32,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     //Find forms that were created 7 days ago and have not been submitted
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
     const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000
+      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000,
     );
 
     const expiredTokens = await prisma.publicFormsTokens.findMany({
