@@ -29,51 +29,72 @@ import { update_job_status } from "./generic_scheduler";
 
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000,
-    );
+    // Bug 1 fixed: Date.now() is in milliseconds so we must multiply by 1000.
+    // The original code used 7 * 24 * 60 * 60 (seconds) instead of 7 * 24 * 60 * 60 * 1000 (milliseconds),
+    // causing sevenDaysAgo to be only ~7 seconds in the past rather than 7 days.
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
+    // Bug 2 fixed: The original query used a narrow window (gte sevenDaysAgo, lt sevenDaysAgo + 1 day),
+    // which only targeted tokens created in a 1-day band around 7 days ago.
+    // The correct intent is to find ALL tokens older than 7 days, i.e. createdAt <= sevenDaysAgo.
     const expiredTokens = await prisma.publicFormsTokens.findMany({
       where: {
         createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
+          lte: sevenDaysAgo, // older than or equal to 7 days ago
         },
       },
     });
 
     for (const token of expiredTokens) {
+      // Bug 3 fixed: the original lookup used product_id: token.productId, which is unrelated
+      // to this token. The relationship to clean up is the one linked to the entity, so we
+      // filter by entity_id: token.entityId instead.
+      //
+      // Bug 4 fixed: Skip tokens with no entityId rather than falling back to an empty string,
+      // which could match unintended records or cause a DB error on delete.
+      if (!token.entityId) {
+        // Always delete the orphaned token even if there is no entity to clean up.
+        await prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        });
+        continue;
+      }
+
       const relationship = await prisma.relationship.findFirst({
         where: {
-          product_id: token.productId,
+          entity_id: token.entityId,
           status: "new",
         },
       });
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
-      }
+      // Bug 5 fixed: The original code skipped deletion of the token and entity when no
+      // relationship was found. Tokens and entities that were never linked to a relationship
+      // must still be cleaned up. We now always delete the token and entity, and only
+      // additionally delete the relationship record when one exists.
+      await prisma.$transaction([
+        // Delete relationship only if one was found
+        ...(relationship
+          ? [
+              prisma.relationship.delete({
+                where: { id: relationship.id },
+              }),
+            ]
+          : []),
+        // Delete the token
+        prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        }),
+        // Delete all corpus items associated with the entity
+        prisma.new_corpus.deleteMany({
+          where: {
+            entity_id: token.entityId,
+          },
+        }),
+        // Delete the entity (company)
+        prisma.entity.delete({
+          where: { id: token.entityId },
+        }),
+      ]);
     }
 
     await update_job_status(job.id, "completed");
