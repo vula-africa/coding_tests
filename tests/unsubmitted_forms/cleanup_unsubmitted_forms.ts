@@ -54,14 +54,23 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         break;
       }
 
+      let cleanedInBatch = 0;
+
       for (const token of expiredTokens) {
         if (!token.entityId) {
           console.warn(
             `Token ${token.token} missing entityId — deleting token only`
           );
-          await prisma.publicFormsTokens
-            .delete({ where: { token: token.token } })
-            .catch(console.error);
+          try {
+            await prisma.publicFormsTokens.delete({
+              where: { token: token.token },
+            });
+            processed++;
+            cleanedInBatch++;
+          } catch (err) {
+            failed++;
+            console.error(`Failed deleting token ${token.token}:`, err);
+          }
           continue;
         }
 
@@ -79,13 +88,17 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             prisma.entity.delete({ where: { id: token.entityId } }),
           ]);
           processed++;
+          cleanedInBatch++;
         } catch (err) {
           failed++;
           console.error(`Failed cleaning up token ${token.token}:`, err);
         }
       }
 
-      if (expiredTokens.length < BATCH_SIZE) {
+      // Failed records remain eligible for cleanup. Stop if this batch did not
+      // delete anything, otherwise the same full batch would be selected
+      // forever and the job would never update its status.
+      if (cleanedInBatch === 0 || expiredTokens.length < BATCH_SIZE) {
         hasMore = false;
       }
     }
