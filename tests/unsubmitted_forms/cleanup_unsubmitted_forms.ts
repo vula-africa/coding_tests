@@ -37,6 +37,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         createdAt: {
           lt: cutoff,
         },
+        submittedAt: null,
       },
     });
 
