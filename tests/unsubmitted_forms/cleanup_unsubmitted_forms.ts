@@ -42,35 +42,23 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
-
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+      if (!token.entityId) {
+        console.warn(
+          `Token ${token.token} missing entityId — deleting token only`
+        );
+        await prisma.publicFormsTokens
+          .delete({ where: { token: token.token } })
+          .catch(console.error);
+        continue;
       }
+      await prisma.$transaction([
+        prisma.relationship.deleteMany({
+          where: { product_id: token.productId, status: "new" },
+        }),
+        prisma.publicFormsTokens.delete({ where: { token: token.token } }),
+        prisma.new_corpus.deleteMany({ where: { entity_id: token.entityId } }),
+        prisma.entity.delete({ where: { id: token.entityId } }),
+      ]);
     }
 
     await update_job_status(job.id, "completed");
