@@ -67,25 +67,13 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       for (const token of expiredTokens) {
         if (!token.entityId) {
           console.warn(
-            `Token ${token.token} missing entityId — deleting token only`
+            `Token ${token.token} missing entityId — skipping cleanup`
           );
-          try {
-            const result = await prisma.publicFormsTokens.deleteMany({
-              where: {
-                token: token.token,
-                createdAt: { lt: UNSUBMITTED_FORM_CUTOFF },
-                submittedAt: null,
-              },
-            });
-            if (result.count > 0) {
-              processed++;
-              cleanedInBatch++;
-            }
-          } catch (err) {
-            failed++;
-            failedTokens.add(token.token);
-            console.error(`Failed deleting token ${token.token}:`, err);
-          }
+          failed++;
+          failedTokens.add(token.token);
+          console.error(
+            `Cannot atomically clean up token ${token.token} without an entityId`
+          );
           continue;
         }
 
