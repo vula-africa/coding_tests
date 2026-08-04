@@ -41,29 +41,27 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     let processed = 0;
     let skipped = 0;
     let failed = 0;
-    let hasMore = true;
-    const failedTokens = new Set<string>();
+    let lastToken: string | undefined;
 
-    while (hasMore) {
+    while (true) {
       const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
           createdAt: {
             lt: UNSUBMITTED_FORM_CUTOFF,
           },
           submittedAt: null,
-          ...(failedTokens.size > 0
-            ? { token: { notIn: [...failedTokens] } }
+          ...(lastToken !== undefined
+            ? { token: { gt: lastToken } }
             : {}),
         },
         take: BATCH_SIZE,
-        orderBy: [{ createdAt: "asc" }, { token: "asc" }],
+        // Token is unique and provides a stable keyset for bounded paging.
+        orderBy: { token: "asc" },
       });
 
       if (expiredTokens.length === 0) {
         break;
       }
-
-      let cleanedInBatch = 0;
 
       for (const token of expiredTokens) {
         if (!token.entityId) {
@@ -71,7 +69,6 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             `Token ${token.token} missing entityId — skipping cleanup`
           );
           failed++;
-          failedTokens.add(token.token);
           console.error(
             `Cannot atomically clean up token ${token.token} without an entityId`
           );
@@ -113,35 +110,39 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
 
           if (result === "cleaned") {
             processed++;
-            cleanedInBatch++;
           } else {
             skipped++;
           }
         } catch (err) {
           failed++;
-          failedTokens.add(token.token);
           console.error(`Failed cleaning up token ${token.token}:`, err);
         }
       }
 
-      // Failed records are excluded from later batches. The no-progress guard
-      // also protects against records that remain eligible after a race or a
-      // database-specific transaction outcome.
-      if (cleanedInBatch === 0 || expiredTokens.length < BATCH_SIZE) {
-        hasMore = false;
+      // Advance regardless of whether records cleaned successfully. This
+      // leaves failures in the database for a later scheduled retry without
+      // selecting them again during this run.
+      lastToken = expiredTokens[expiredTokens.length - 1].token;
+      if (expiredTokens.length < BATCH_SIZE) {
+        break;
       }
     }
 
     console.log(
-      `Cleanup: ${processed} cleaned, ${skipped} skipped, ${failed} failed`
+      `Cleanup summary: processed=${processed}, skipped=${skipped}, failed=${failed}`
     );
-    await update_job_status(
-      job.id,
-      failed > 0 ? "completed_with_errors" : "completed"
-    );
+    // The scheduler supports completed and failed statuses. A run with
+    // unresolved records is not fully successful, so report it as failed.
+    await update_job_status(job.id, failed > 0 ? "failed" : "completed");
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
-    await update_job_status(job.id, "failed");
+    try {
+      await update_job_status(job.id, "failed");
+    } catch (statusError) {
+      // Do not replace the original job-level error with a status-update
+      // failure. The original error is the actionable failure to the caller.
+      console.error("Failed to update cleanup job status:", statusError);
+    }
     throw error;
   }
 };
