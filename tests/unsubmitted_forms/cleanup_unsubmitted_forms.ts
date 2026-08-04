@@ -41,6 +41,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       },
     });
 
+    let processed = 0;
+    let failed = 0;
+
     for (const token of expiredTokens) {
       if (!token.entityId) {
         console.warn(
@@ -51,17 +54,28 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           .catch(console.error);
         continue;
       }
-      await prisma.$transaction([
-        prisma.relationship.deleteMany({
-          where: { product_id: token.productId, status: "new" },
-        }),
-        prisma.publicFormsTokens.delete({ where: { token: token.token } }),
-        prisma.new_corpus.deleteMany({ where: { entity_id: token.entityId } }),
-        prisma.entity.delete({ where: { id: token.entityId } }),
-      ]);
+      try {
+        await prisma.$transaction([
+          prisma.relationship.deleteMany({
+            where: { product_id: token.productId, status: "new" },
+          }),
+          prisma.publicFormsTokens.delete({ where: { token: token.token } }),
+          prisma.new_corpus.deleteMany({
+            where: { entity_id: token.entityId },
+          }),
+          prisma.entity.delete({ where: { id: token.entityId } }),
+        ]);
+        processed++;
+      } catch (err) {
+        failed++;
+        console.error(`Failed cleaning up token ${token.token}:`, err);
+      }
     }
-
-    await update_job_status(job.id, "completed");
+    console.log(`Cleanup: ${processed} processed, ${failed} failed`);
+    await update_job_status(
+      job.id,
+      failed > 0 ? "completed_with_errors" : "completed"
+    );
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
     await update_job_status(job.id, "failed");
