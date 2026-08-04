@@ -27,13 +27,16 @@ import { Prisma, type JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const FORM_EXPIRY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const BATCH_SIZE = 500;
 
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created more than 7 days ago and have not been submitted
-    const cutoff = new Date(Date.now() - SEVEN_DAYS_MS);
+    // Capture one cutoff for the whole run. There is intentionally no lower
+    // bound: every unsubmitted form older than seven days is eligible.
+    const UNSUBMITTED_FORM_CUTOFF = new Date(
+      Date.now() - FORM_EXPIRY_AGE_MS
+    );
 
     let processed = 0;
     let failed = 0;
@@ -44,7 +47,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       const expiredTokens = await prisma.publicFormsTokens.findMany({
         where: {
           createdAt: {
-            lt: cutoff,
+            lt: UNSUBMITTED_FORM_CUTOFF,
           },
           submittedAt: null,
           ...(failedTokens.size > 0
@@ -52,6 +55,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             : {}),
         },
         take: BATCH_SIZE,
+        orderBy: [{ createdAt: "asc" }, { token: "asc" }],
       });
 
       if (expiredTokens.length === 0) {
@@ -69,7 +73,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             const result = await prisma.publicFormsTokens.deleteMany({
               where: {
                 token: token.token,
-                createdAt: { lt: cutoff },
+                createdAt: { lt: UNSUBMITTED_FORM_CUTOFF },
                 submittedAt: null,
               },
             });
@@ -93,7 +97,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
               const tokenResult = await tx.publicFormsTokens.deleteMany({
                 where: {
                   token: token.token,
-                  createdAt: { lt: cutoff },
+                  createdAt: { lt: UNSUBMITTED_FORM_CUTOFF },
                   submittedAt: null,
                 },
               });
