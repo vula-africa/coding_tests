@@ -39,6 +39,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     );
 
     let processed = 0;
+    let skipped = 0;
     let failed = 0;
     let hasMore = true;
     const failedTokens = new Set<string>();
@@ -91,7 +92,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
               });
 
               if (tokenResult.count === 0) {
-                return false;
+                return "skipped" as const;
               }
 
               await tx.relationship.deleteMany({
@@ -105,14 +106,16 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
                 where: { entity_id: token.entityId },
               });
               await tx.entity.delete({ where: { id: token.entityId } });
-              return true;
+              return "cleaned" as const;
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
           );
 
-          if (result) {
+          if (result === "cleaned") {
             processed++;
             cleanedInBatch++;
+          } else {
+            skipped++;
           }
         } catch (err) {
           failed++;
@@ -129,7 +132,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       }
     }
 
-    console.log(`Cleanup: ${processed} processed, ${failed} failed`);
+    console.log(
+      `Cleanup: ${processed} cleaned, ${skipped} skipped, ${failed} failed`
+    );
     await update_job_status(
       job.id,
       failed > 0 ? "completed_with_errors" : "completed"
