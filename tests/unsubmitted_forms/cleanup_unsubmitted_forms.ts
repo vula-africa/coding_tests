@@ -23,7 +23,7 @@
  */
 
 // For the purpose of this test you can ignore that the imports are not working.
-import type { JobScheduleQueue } from "@prisma/client";
+import { Prisma, type JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
@@ -38,6 +38,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     let processed = 0;
     let failed = 0;
     let hasMore = true;
+    const failedTokens = new Set<string>();
 
     while (hasMore) {
       const expiredTokens = await prisma.publicFormsTokens.findMany({
@@ -46,6 +47,9 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             lt: cutoff,
           },
           submittedAt: null,
+          ...(failedTokens.size > 0
+            ? { token: { notIn: [...failedTokens] } }
+            : {}),
         },
         take: BATCH_SIZE,
       });
@@ -62,42 +66,72 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             `Token ${token.token} missing entityId — deleting token only`
           );
           try {
-            await prisma.publicFormsTokens.delete({
-              where: { token: token.token },
+            const result = await prisma.publicFormsTokens.deleteMany({
+              where: {
+                token: token.token,
+                createdAt: { lt: cutoff },
+                submittedAt: null,
+              },
             });
-            processed++;
-            cleanedInBatch++;
+            if (result.count > 0) {
+              processed++;
+              cleanedInBatch++;
+            }
           } catch (err) {
             failed++;
+            failedTokens.add(token.token);
             console.error(`Failed deleting token ${token.token}:`, err);
           }
           continue;
         }
 
         try {
-          await prisma.$transaction([
-            prisma.relationship.deleteMany({
-              where: { product_id: token.productId, status: "new" },
-            }),
-            prisma.publicFormsTokens.delete({
-              where: { token: token.token },
-            }),
-            prisma.new_corpus.deleteMany({
-              where: { entity_id: token.entityId },
-            }),
-            prisma.entity.delete({ where: { id: token.entityId } }),
-          ]);
-          processed++;
-          cleanedInBatch++;
+          const result = await prisma.$transaction(
+            async (tx) => {
+              // Re-check eligibility inside the transaction. If the form was
+              // submitted after the batch query, nothing is deleted.
+              const tokenResult = await tx.publicFormsTokens.deleteMany({
+                where: {
+                  token: token.token,
+                  createdAt: { lt: cutoff },
+                  submittedAt: null,
+                },
+              });
+
+              if (tokenResult.count === 0) {
+                return false;
+              }
+
+              await tx.relationship.deleteMany({
+                where: {
+                  product_id: token.productId,
+                  entity_id: token.entityId,
+                  status: "new",
+                },
+              });
+              await tx.new_corpus.deleteMany({
+                where: { entity_id: token.entityId },
+              });
+              await tx.entity.delete({ where: { id: token.entityId } });
+              return true;
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+          );
+
+          if (result) {
+            processed++;
+            cleanedInBatch++;
+          }
         } catch (err) {
           failed++;
+          failedTokens.add(token.token);
           console.error(`Failed cleaning up token ${token.token}:`, err);
         }
       }
 
-      // Failed records remain eligible for cleanup. Stop if this batch did not
-      // delete anything, otherwise the same full batch would be selected
-      // forever and the job would never update its status.
+      // Failed records are excluded from later batches. The no-progress guard
+      // also protects against records that remain eligible after a race or a
+      // database-specific transaction outcome.
       if (cleanedInBatch === 0 || expiredTokens.length < BATCH_SIZE) {
         hasMore = false;
       }
