@@ -40,41 +40,62 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       },
     });
 
-    for (const token of expiredTokens) {
-      if (!token.entityId) {
-        await prisma.publicFormsTokens.delete({
-          where: { token: token.token },
-        });
-        continue;
-      }
+    let deleted = 0;
+    let failed = 0;
 
-      await prisma.$transaction([
-        // Delete relationship
-        prisma.relationship.deleteMany({
-          where: {
-            entity_id: token.entityId,
-            product_id: token.productId,
-            status: "new",
-          },
-        }),
-        // // Delete the token
-        prisma.publicFormsTokens.delete({
-          where: { token: token.token },
-        }),
-        // Delete all corpus items associated with the entity
-        prisma.new_corpus.deleteMany({
-          where: {
-            entity_id: token.entityId,
-          },
-        }),
-        // Delete the entity (company)
-        prisma.entity.delete({
-          where: { id: token.entityId },
-        }),
-      ]);
+    for (const token of expiredTokens) {
+      try {
+        if (!token.entityId) {
+          console.warn(
+            `Token ${token.token} (product ${token.productId}, created ${token.createdAt.toISOString()}) has no entityId, deleting token only`,
+          );
+          await prisma.publicFormsTokens.delete({
+            where: { token: token.token },
+          });
+          deleted++;
+          continue;
+        }
+
+        await prisma.$transaction([
+          // Delete relationship
+          prisma.relationship.deleteMany({
+            where: {
+              entity_id: token.entityId,
+              product_id: token.productId,
+              status: "new",
+            },
+          }),
+          // // Delete the token
+          prisma.publicFormsTokens.delete({
+            where: { token: token.token },
+          }),
+          // Delete all corpus items associated with the entity
+          prisma.new_corpus.deleteMany({
+            where: {
+              entity_id: token.entityId,
+            },
+          }),
+          // Delete the entity (company)
+          prisma.entity.delete({
+            where: { id: token.entityId },
+          }),
+        ]);
+
+        deleted++;
+      } catch (error) {
+        failed++;
+        console.error(
+          `Failed to clean up token ${token.token}:`,
+          error,
+        );
+      }
     }
 
-    await update_job_status(job.id, "completed");
+    console.log(
+      `cleanup_unsubmitted_forms: ${expiredTokens.length} expired, ${deleted} deleted, ${failed} failed`,
+    );
+
+    await update_job_status(job.id, failed > 0 ? "failed" : "completed");
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
     await update_job_status(job.id, "failed");
