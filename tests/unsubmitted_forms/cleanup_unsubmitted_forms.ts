@@ -27,6 +27,8 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+const BATCH_SIZE = 1000;
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     //Find forms that were created 7 days ago and have not been submitted
@@ -38,6 +40,14 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           lt: sevenDaysAgo,
         },
       },
+      select: {
+        token: true,
+        entityId: true,
+        productId: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "asc" },
+      take: BATCH_SIZE,
     });
 
     let deleted = 0;
@@ -57,6 +67,10 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
         }
 
         await prisma.$transaction([
+          // Delete the token
+          prisma.publicFormsTokens.delete({
+            where: { token: token.token },
+          }),
           // Delete relationship
           prisma.relationship.deleteMany({
             where: {
@@ -64,10 +78,6 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
               product_id: token.productId,
               status: "new",
             },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
           }),
           // Delete all corpus items associated with the entity
           prisma.new_corpus.deleteMany({
