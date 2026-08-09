@@ -44,6 +44,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     for (const token of expiredTokens) {
       const relationship = await prisma.relationship.findFirst({
         where: {
+          entity_id: token.entityId,
           product_id: token.productId,
           status: "new",
         },
@@ -51,9 +52,13 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
 
       if (relationship) {
         await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
+          // This entity's own unfinished relationships for this product.
+          prisma.relationship.deleteMany({
+            where: {
+              entity_id: token.entityId,
+              product_id: token.productId,
+              status: "new",
+            },
           }),
           // // Delete the token
           prisma.publicFormsTokens.delete({
