@@ -29,11 +29,19 @@ import { update_job_status } from "./generic_scheduler";
 
 const EXPIRY_DAYS = 7;
 const BATCH_SIZE = 500;
+const LOG_PREFIX = "cleanup_unsubmitted_forms";
 
 type ExpiredToken = {
   token: string;
   entityId: string | null;
   productId: string;
+};
+
+type BatchResult = {
+  entitiesDeleted: Set<string>;
+  entitiesKept: Set<string>;
+  handled: number;
+  failed: number;
 };
 
 export const expiry_cutoff = (now: Date = new Date()): Date =>
@@ -122,45 +130,87 @@ const cleanUpToken = async (
   return false;
 };
 
+const cleanUpBatch = async (
+  tokens: ExpiredToken[],
+  cutoff: Date,
+): Promise<BatchResult> => {
+  const entityIds = [
+    ...new Set(
+      tokens.map((t) => t.entityId).filter((id): id is string => !!id),
+    ),
+  ];
+  const entitiesInUse = await findEntitiesInUse(entityIds, cutoff);
+
+  const result: BatchResult = {
+    entitiesDeleted: new Set(),
+    entitiesKept: new Set(),
+    handled: 0,
+    failed: 0,
+  };
+
+  for (const token of tokens) {
+    // Deleting an entity takes its other tokens with it.
+    if (token.entityId && result.entitiesDeleted.has(token.entityId)) continue;
+
+    try {
+      const entityRemoved = await cleanUpToken(token, entitiesInUse, cutoff);
+
+      if (token.entityId) {
+        const bucket = entityRemoved
+          ? result.entitiesDeleted
+          : result.entitiesKept;
+        bucket.add(token.entityId);
+      }
+      result.handled++;
+    } catch (error) {
+      result.failed++;
+      console.error(`${LOG_PREFIX}: ${token.token} failed`, error);
+    }
+  }
+
+  return result;
+};
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     const cutoff = expiry_cutoff();
 
+    let scanned = 0;
+    let failed = 0;
+    // Sets, because one entity can own several tokens across several batches.
+    const deleted = new Set<string>();
+    const kept = new Set<string>();
+
     while (true) {
-      const expiredTokens = await findExpiredTokens(cutoff);
-      if (expiredTokens.length === 0) break;
+      const tokens = await findExpiredTokens(cutoff);
+      if (tokens.length === 0) break;
 
-      const entityIds = [
-        ...new Set(
-          expiredTokens
-            .map((t) => t.entityId)
-            .filter((id): id is string => !!id),
-        ),
-      ];
-      const entitiesInUse = await findEntitiesInUse(entityIds, cutoff);
+      scanned += tokens.length;
+      const batch = await cleanUpBatch(tokens, cutoff);
 
-      const entitiesRemoved = new Set<string>();
-      let handled = 0;
+      for (const id of batch.entitiesDeleted) deleted.add(id);
+      for (const id of batch.entitiesKept) kept.add(id);
+      failed += batch.failed;
 
-      for (const token of expiredTokens) {
-        // Deleting an entity takes its other tokens with it.
-        if (token.entityId && entitiesRemoved.has(token.entityId)) continue;
-
-        const entityRemoved = await cleanUpToken(token, entitiesInUse, cutoff);
-        if (entityRemoved && token.entityId) {
-          entitiesRemoved.add(token.entityId);
-        }
-        handled++;
-      }
-
-      // A batch that handles nothing would be fetched again next time round.
-      if (handled === 0) {
-        console.warn("cleanup_unsubmitted_forms: no progress, stopping");
+      // Every row in this batch failed, so the next pass would fetch the same
+      // ones again.
+      if (batch.handled === 0) {
+        console.warn(`${LOG_PREFIX}: no progress, stopping`);
         break;
       }
     }
 
-    await update_job_status(job.id, "completed");
+    console.log(
+      `${LOG_PREFIX}: ${scanned} tokens, ${deleted.size} entities deleted, ` +
+        `${kept.size} kept, ${failed} failed`,
+    );
+
+    // Only fail the run if nothing worked. One bad row shouldn't hide a run
+    // that did most of its job.
+    await update_job_status(
+      job.id,
+      deleted.size === 0 && failed > 0 ? "failed" : "completed",
+    );
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
     await update_job_status(job.id, "failed");
