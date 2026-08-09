@@ -27,21 +27,18 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
+const EXPIRY_DAYS = 7;
+
+export const expiry_cutoff = (now: Date = new Date()): Date =>
+  new Date(now.getTime() - EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000,
-    );
+    // No lower bound, so a missed run is picked up by the next one.
+    const cutoff = expiry_cutoff();
 
     const expiredTokens = await prisma.publicFormsTokens.findMany({
-      where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
-      },
+      where: { createdAt: { lt: cutoff } },
     });
 
     for (const token of expiredTokens) {
