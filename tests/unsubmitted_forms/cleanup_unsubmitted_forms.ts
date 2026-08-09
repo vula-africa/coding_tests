@@ -48,6 +48,80 @@ const findExpiredTokens = (cutoff: Date): Promise<ExpiredToken[]> =>
     take: BATCH_SIZE,
   });
 
+// deleteMany so a token that has already gone is not an error.
+const deleteTokenOnly = (token: string) =>
+  prisma.publicFormsTokens.deleteMany({ where: { token } });
+
+// In use means an unexpired token points at it, or a relationship has moved
+// past "new". One pair of queries per batch.
+const findEntitiesInUse = async (entityIds: string[], cutoff: Date) => {
+  if (entityIds.length === 0) return new Set<string>();
+
+  const [live, finished] = await Promise.all([
+    prisma.publicFormsTokens.findMany({
+      where: { entityId: { in: entityIds }, createdAt: { gte: cutoff } },
+      select: { entityId: true },
+    }),
+    prisma.relationship.findMany({
+      where: { entity_id: { in: entityIds }, status: { not: "new" } },
+      select: { entity_id: true },
+    }),
+  ]);
+
+  return new Set<string>([
+    ...live.map((t) => t.entityId).filter((id): id is string => !!id),
+    ...finished.map((r) => r.entity_id),
+  ]);
+};
+
+// The bulk check is a few seconds old by now, so ask again before deleting.
+// Someone submitting in that window is the case we cannot get wrong.
+// Returns false if the entity turns out to be in use.
+const deleteEntityIfUnused = (
+  entityId: string,
+  productId: string,
+  cutoff: Date,
+) =>
+  prisma.$transaction(async (tx) => {
+    const [live, finished] = await Promise.all([
+      tx.publicFormsTokens.count({
+        where: { entityId, createdAt: { gte: cutoff } },
+      }),
+      tx.relationship.count({
+        where: { entity_id: entityId, status: { not: "new" } },
+      }),
+    ]);
+
+    if (live > 0 || finished > 0) return false;
+
+    await tx.relationship.deleteMany({
+      where: { entity_id: entityId, product_id: productId, status: "new" },
+    });
+    // All of this entity's tokens, or the next pass would try to delete an
+    // entity that has already gone.
+    await tx.publicFormsTokens.deleteMany({ where: { entityId } });
+    await tx.new_corpus.deleteMany({ where: { entity_id: entityId } });
+    await tx.entity.delete({ where: { id: entityId } });
+
+    return true;
+  });
+
+// The token always goes. The entity only goes if nothing else needs it.
+// Returns true if the entity was removed.
+const cleanUpToken = async (
+  { token, entityId, productId }: ExpiredToken,
+  entitiesInUse: Set<string>,
+  cutoff: Date,
+): Promise<boolean> => {
+  if (entityId && !entitiesInUse.has(entityId)) {
+    const removed = await deleteEntityIfUnused(entityId, productId, cutoff);
+    if (removed) return true;
+  }
+
+  await deleteTokenOnly(token);
+  return false;
+};
+
 export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
   try {
     const cutoff = expiry_cutoff();
@@ -56,46 +130,31 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       const expiredTokens = await findExpiredTokens(cutoff);
       if (expiredTokens.length === 0) break;
 
-      let removed = 0;
+      const entityIds = [
+        ...new Set(
+          expiredTokens
+            .map((t) => t.entityId)
+            .filter((id): id is string => !!id),
+        ),
+      ];
+      const entitiesInUse = await findEntitiesInUse(entityIds, cutoff);
+
+      const entitiesRemoved = new Set<string>();
+      let handled = 0;
 
       for (const token of expiredTokens) {
-        const relationship = await prisma.relationship.findFirst({
-          where: {
-            entity_id: token.entityId,
-            product_id: token.productId,
-            status: "new",
-          },
-        });
+        // Deleting an entity takes its other tokens with it.
+        if (token.entityId && entitiesRemoved.has(token.entityId)) continue;
 
-        if (relationship) {
-          await prisma.$transaction([
-            // This entity's own unfinished relationships for this product.
-            prisma.relationship.deleteMany({
-              where: {
-                entity_id: token.entityId,
-                product_id: token.productId,
-                status: "new",
-              },
-            }),
-            // Delete the token
-            prisma.publicFormsTokens.delete({
-              where: { token: token.token },
-            }),
-            // Delete all corpus items associated with the entity
-            prisma.new_corpus.deleteMany({
-              where: { entity_id: token.entityId || "" },
-            }),
-            // Delete the entity (company)
-            prisma.entity.delete({
-              where: { id: token.entityId || "" },
-            }),
-          ]);
-          removed++;
+        const entityRemoved = await cleanUpToken(token, entitiesInUse, cutoff);
+        if (entityRemoved && token.entityId) {
+          entitiesRemoved.add(token.entityId);
         }
+        handled++;
       }
 
-      // A batch that removes nothing would be fetched again next time round.
-      if (removed === 0) {
+      // A batch that handles nothing would be fetched again next time round.
+      if (handled === 0) {
         console.warn("cleanup_unsubmitted_forms: no progress, stopping");
         break;
       }
