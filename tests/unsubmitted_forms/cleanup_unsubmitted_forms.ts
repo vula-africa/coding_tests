@@ -8,18 +8,29 @@
  This is to prevent the database from being cluttered with unused tokens and entities.
  */
 
-/* Task Instructions:
- * 1. Read and understand the code below
- * 2. Identify ALL issues in the code (there are multiple)
- * 3. Fix the issues and create a working solution
- * 4. Create a PR with clear commit messages
- * 5. Record a 3-5 minute Loom video explaining:
- *    - What issues you found
- *    - How you fixed them
- *    - Any trade-offs you considered
- *
- * Focus on: correctness, performance, error handling, and code clarity
- * Expected time: 45-60 minutes
+/* The Goal:
+┌──────────────────────────────────────┐
+│ Scheduled job                        │
+│                                      │
+│ 1. Calculate cleanup cutoff           │
+│ 2. Fetch a batch of eligible tokens  │
+│ 3. Clean each token                  │
+│ 4. Track failures                    │
+│ 5. Update scheduler status           │
+└──────────────────────────────────────┘
+                    │
+                    ▼
+        cleanupUnsubmittedForm()
+                    │
+                    ▼
+             Prisma transaction
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+   relationship   corpus      token
+                                │
+                                ▼
+                              entity
  */
 
 // For the purpose of this test you can ignore that the imports are not working.
@@ -27,59 +38,136 @@ import type { JobScheduleQueue } from "@prisma/client";
 import { prisma } from "../endpoints/middleware/prisma";
 import { update_job_status } from "./generic_scheduler";
 
-export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
-  try {
-    //Find forms that were created 7 days ago and have not been submitted
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60);
-    const sevenDaysAgoPlusOneDay = new Date(
-      sevenDaysAgo.getTime() + 24 * 60 * 60 * 1000,
-    );
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const BATCH_SIZE = 500;
 
-    const expiredTokens = await prisma.publicFormsTokens.findMany({
+type PublicFormToken = Awaited<
+  ReturnType<typeof prisma.publicFormsTokens.findMany>
+>[number];
+
+/**
+ * Removes all data created for an abandoned public form.
+ *
+ * The cleanup is atomic so we don't leave an entity with only some
+ * of its temporary data removed.
+ */
+const cleanupUnsubmittedForm = async (token: PublicFormToken) => {
+  await prisma.$transaction([
+    // Remove the relationship created for this form.
+    ...(token.entityId
+      ? [
+        prisma.relationship.deleteMany({
+          where: {
+            product_id: token.productId,
+            entity_id: token.entityId,
+            status: "new",
+          },
+        }),
+
+        // Remove data collected while building the entity.
+        prisma.new_corpus.deleteMany({
+          where: {
+            entity_id: token.entityId,
+          },
+        }),
+      ]
+      : []),
+
+    // The token itself is no longer needed.
+    prisma.publicFormsTokens.delete({
       where: {
-        createdAt: {
-          gte: sevenDaysAgo, // greater than or equal to 7 days ago
-          lt: sevenDaysAgoPlusOneDay, // but less than 7 days ago + 1 day
-        },
+        token: token.token,
       },
-    });
+    }),
 
-    for (const token of expiredTokens) {
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          status: "new",
-        },
-      });
+    // Remove the temporary entity after its dependent data.
+    ...(token.entityId
+      ? [
+        prisma.entity.deleteMany({
+          where: {
+            id: token.entityId,
+          },
+        }),
+      ]
+      : []),
+  ]);
+};
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId || "",
+export const cleanup_unsubmitted_forms = async (
+  job: JobScheduleQueue,
+) => {
+  const cutoff = new Date(Date.now() - SEVEN_DAYS_MS);
+
+  let deletedCount = 0;
+
+  /*
+   * Tokens that failed to delete are excluded from subsequent pages.
+   * Without this, a permanently failing token would be re-fetched and
+   * retried on every iteration, inflating the failure count.
+   */
+  const failedTokens = new Set<string>();
+
+  try {
+    while (true) {
+      const expiredTokens =
+        await prisma.publicFormsTokens.findMany({
+          where: {
+            createdAt: {
+              lt: cutoff,
             },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId || "" },
-          }),
-        ]);
+            submittedAt: null,
+            token: {
+              notIn: [...failedTokens],
+            },
+          },
+          take: BATCH_SIZE,
+        });
+
+      /*
+       * The query always starts from the first page because successful
+       * records are deleted from the result set and failed ones are
+       * excluded, so an empty page means the backlog is fully drained.
+       */
+      if (expiredTokens.length === 0) {
+        break;
+      }
+
+      for (const token of expiredTokens) {
+        try {
+          await cleanupUnsubmittedForm(token);
+
+          deletedCount++;
+        } catch (error) {
+          failedTokens.add(token.token);
+
+          console.error(
+            `Failed to clean up unsubmitted form token ${token.token} ` +
+            `(entity ${token.entityId}):`,
+            error,
+          );
+        }
       }
     }
 
-    await update_job_status(job.id, "completed");
+    const failedCount = failedTokens.size;
+
+    console.log(
+      `cleanup_unsubmitted_forms: deleted ${deletedCount}, ` +
+      `failed ${failedCount}`,
+    );
+
+    await update_job_status(
+      job.id,
+      failedCount > 0 ? "failed" : "completed",
+    );
   } catch (error) {
-    console.error("Error cleaning up unsubmitted forms:", error);
+    console.error(
+      "Error cleaning up unsubmitted forms:",
+      error,
+    );
+
     await update_job_status(job.id, "failed");
+
     throw error;
   }
 };
