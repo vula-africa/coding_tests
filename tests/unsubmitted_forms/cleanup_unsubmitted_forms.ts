@@ -77,6 +77,22 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
             where: { id: token.entityId },
           }),
         ]);
+      } else {
+        // No matching unsubmitted relationship — still remove the expired token
+        // and any entity/corpus left behind from an abandoned form
+        await prisma.$transaction([
+          prisma.publicFormsTokens.delete({
+            where: { token: token.token },
+          }),
+          prisma.new_corpus.deleteMany({
+            where: {
+              entity_id: token.entityId,
+            },
+          }),
+          prisma.entity.delete({
+            where: { id: token.entityId },
+          }),
+        ]);
       }
     }
 
