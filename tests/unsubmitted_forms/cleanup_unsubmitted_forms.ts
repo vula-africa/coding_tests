@@ -40,59 +40,84 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       },
     });
 
-    for (const token of expiredTokens) {
-      if (!token.entityId) {
-        await prisma.publicFormsTokens.delete({
-          where: { token: token.token },
-        });
-        continue;
-      }
+    const BATCH_SIZE = 100;
 
-      const relationship = await prisma.relationship.findFirst({
-        where: {
-          product_id: token.productId,
-          entity_id: token.entityId,
-          status: "new",
-        },
-      });
+    for (let i = 0; i < expiredTokens.length; i += BATCH_SIZE) {
+      const batch = expiredTokens.slice(i, i + BATCH_SIZE);
+      const tokensWithEntity = batch.filter((token) => token.entityId);
 
-      if (relationship) {
-        await prisma.$transaction([
-          // Delete relationship
-          prisma.relationship.delete({
-            where: { id: relationship.id },
-          }),
-          // // Delete the token
-          prisma.publicFormsTokens.delete({
+      const relationships =
+        tokensWithEntity.length > 0
+          ? await prisma.relationship.findMany({
+              where: {
+                status: "new",
+                product_id: {
+                  in: tokensWithEntity.map((token) => token.productId),
+                },
+                entity_id: {
+                  in: tokensWithEntity.map((token) => token.entityId as string),
+                },
+              },
+            })
+          : [];
+
+      const relationshipByKey = new Map(
+        relationships.map((relationship) => [
+          `${relationship.product_id}:${relationship.entity_id}`,
+          relationship,
+        ]),
+      );
+
+      for (const token of batch) {
+        if (!token.entityId) {
+          await prisma.publicFormsTokens.delete({
             where: { token: token.token },
-          }),
-          // Delete all corpus items associated with the entity
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId,
-            },
-          }),
-          // Delete the entity (company)
-          prisma.entity.delete({
-            where: { id: token.entityId },
-          }),
-        ]);
-      } else {
-        // No matching unsubmitted relationship — still remove the expired token
-        // and any entity/corpus left behind from an abandoned form
-        await prisma.$transaction([
-          prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          }),
-          prisma.new_corpus.deleteMany({
-            where: {
-              entity_id: token.entityId,
-            },
-          }),
-          prisma.entity.delete({
-            where: { id: token.entityId },
-          }),
-        ]);
+          });
+          continue;
+        }
+
+        const relationship = relationshipByKey.get(
+          `${token.productId}:${token.entityId}`,
+        );
+
+        if (relationship) {
+          await prisma.$transaction([
+            // Delete relationship
+            prisma.relationship.delete({
+              where: { id: relationship.id },
+            }),
+            // // Delete the token
+            prisma.publicFormsTokens.delete({
+              where: { token: token.token },
+            }),
+            // Delete all corpus items associated with the entity
+            prisma.new_corpus.deleteMany({
+              where: {
+                entity_id: token.entityId,
+              },
+            }),
+            // Delete the entity (company)
+            prisma.entity.delete({
+              where: { id: token.entityId },
+            }),
+          ]);
+        } else {
+          // No matching unsubmitted relationship — still remove the expired token
+          // and any entity/corpus left behind from an abandoned form
+          await prisma.$transaction([
+            prisma.publicFormsTokens.delete({
+              where: { token: token.token },
+            }),
+            prisma.new_corpus.deleteMany({
+              where: {
+                entity_id: token.entityId,
+              },
+            }),
+            prisma.entity.delete({
+              where: { id: token.entityId },
+            }),
+          ]);
+        }
       }
     }
 
