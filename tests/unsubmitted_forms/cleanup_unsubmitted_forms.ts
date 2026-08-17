@@ -41,6 +41,13 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     for (const token of expiredTokens) {
+      if (!token.entityId) {
+        await prisma.publicFormsTokens.delete({
+          where: { token: token.token },
+        });
+        continue;
+      }
+
       const relationship = await prisma.relationship.findFirst({
         where: {
           product_id: token.productId,
@@ -62,12 +69,12 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
           // Delete all corpus items associated with the entity
           prisma.new_corpus.deleteMany({
             where: {
-              entity_id: token.entityId || "",
+              entity_id: token.entityId,
             },
           }),
           // Delete the entity (company)
           prisma.entity.delete({
-            where: { id: token.entityId || "" },
+            where: { id: token.entityId },
           }),
         ]);
       }
