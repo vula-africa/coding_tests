@@ -44,6 +44,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       const relationship = await prisma.relationship.findFirst({
         where: {
           product_id: token.productId,
+          entity_id: token.entityId,
           status: "new",
         },
       });
