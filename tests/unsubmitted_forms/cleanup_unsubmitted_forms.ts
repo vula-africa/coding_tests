@@ -41,6 +41,7 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
     });
 
     const BATCH_SIZE = 100;
+    let failureCount = 0;
 
     for (let i = 0; i < expiredTokens.length; i += BATCH_SIZE) {
       const batch = expiredTokens.slice(i, i + BATCH_SIZE);
@@ -69,59 +70,70 @@ export const cleanup_unsubmitted_forms = async (job: JobScheduleQueue) => {
       );
 
       for (const token of batch) {
-        if (!token.entityId) {
-          await prisma.publicFormsTokens.delete({
-            where: { token: token.token },
-          });
-          continue;
-        }
-
-        const relationship = relationshipByKey.get(
-          `${token.productId}:${token.entityId}`,
-        );
-
-        if (relationship) {
-          await prisma.$transaction([
-            // Delete relationship
-            prisma.relationship.delete({
-              where: { id: relationship.id },
-            }),
-            // // Delete the token
-            prisma.publicFormsTokens.delete({
+        try {
+          if (!token.entityId) {
+            await prisma.publicFormsTokens.delete({
               where: { token: token.token },
-            }),
-            // Delete all corpus items associated with the entity
-            prisma.new_corpus.deleteMany({
-              where: {
-                entity_id: token.entityId,
-              },
-            }),
-            // Delete the entity (company)
-            prisma.entity.delete({
-              where: { id: token.entityId },
-            }),
-          ]);
-        } else {
-          // No matching unsubmitted relationship — still remove the expired token
-          // and any entity/corpus left behind from an abandoned form
-          await prisma.$transaction([
-            prisma.publicFormsTokens.delete({
-              where: { token: token.token },
-            }),
-            prisma.new_corpus.deleteMany({
-              where: {
-                entity_id: token.entityId,
-              },
-            }),
-            prisma.entity.delete({
-              where: { id: token.entityId },
-            }),
-          ]);
+            });
+            continue;
+          }
+
+          const relationship = relationshipByKey.get(
+            `${token.productId}:${token.entityId}`,
+          );
+
+          if (relationship) {
+            await prisma.$transaction([
+              // Delete relationship
+              prisma.relationship.delete({
+                where: { id: relationship.id },
+              }),
+              // // Delete the token
+              prisma.publicFormsTokens.delete({
+                where: { token: token.token },
+              }),
+              // Delete all corpus items associated with the entity
+              prisma.new_corpus.deleteMany({
+                where: {
+                  entity_id: token.entityId,
+                },
+              }),
+              // Delete the entity (company)
+              prisma.entity.delete({
+                where: { id: token.entityId },
+              }),
+            ]);
+          } else {
+            // No matching unsubmitted relationship — still remove the expired token
+            // and any entity/corpus left behind from an abandoned form
+            await prisma.$transaction([
+              prisma.publicFormsTokens.delete({
+                where: { token: token.token },
+              }),
+              prisma.new_corpus.deleteMany({
+                where: {
+                  entity_id: token.entityId,
+                },
+              }),
+              prisma.entity.delete({
+                where: { id: token.entityId },
+              }),
+            ]);
+          }
+        } catch (tokenError) {
+          failureCount += 1;
+          console.error(
+            `Error cleaning up unsubmitted form token ${token.token}:`,
+            tokenError,
+          );
         }
       }
     }
 
-    await update_job_status(job.id, "completed");
+    await update_job_status(
+      job.id,
+      failureCount > 0 ? "failed" : "completed",
+    );
   } catch (error) {
     console.error("Error cleaning up unsubmitted forms:", error);
     await update_job_status(job.id, "failed");
